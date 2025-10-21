@@ -5,9 +5,9 @@ import seaborn as sns
 plt.style.use("ggplot")
 
 # 1. Load datasets
-df_load = pd.read_csv("TotalLoad_DayAhead_Hourly.csv", parse_dates=["datetime"])
-df_gen = pd.read_csv("TotalGen_Hourly.csv", parse_dates=["Hourly_Time_Start"])
-df_types = pd.read_csv("generation_hourly_all_types.csv", parse_dates=["Time_Interval"])
+df_load = pd.read_csv("Load Data/TotalLoadDayAhead_Hour_2022_2024_combined.csv", parse_dates=["datetime"])
+df_gen = pd.read_csv("Gen_data/average_hourly_generation.csv", parse_dates=["Hourly_Time_Start"])
+df_types = pd.read_csv("Gen_data/gen_hourly_MW_all_wide.csv", parse_dates=["datetime"])
 
 # 2. Rename + clean
 df_gen.rename(columns={"Hourly_Time_Start": "datetime"}, inplace=True)
@@ -56,8 +56,8 @@ plt.show()
 
 
 #Monthly average
-monthly_load = df_load.resample('M').mean()/1000
-monthly_gen = df_gen.resample('M').mean()/1000
+monthly_load = df_load.resample('ME').mean()/1000
+monthly_gen = df_gen.resample('ME').mean()/1000
 
 monthly = pd.DataFrame({
     "Actual Load": monthly_load["Actual Total Load (MW)"],

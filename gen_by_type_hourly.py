@@ -20,7 +20,7 @@ for file in os.listdir(input_folder):
         df.set_index('Time_Interval', inplace=True)
 
         # Resample to hourly
-        hourly_df = df['Generation_Value'].resample('H').sum().to_frame(name=gen_type)
+        hourly_df = df['Generation_Value'].resample('h').sum().to_frame(name=gen_type)
 
         hourly_dfs[gen_type] = hourly_df
 

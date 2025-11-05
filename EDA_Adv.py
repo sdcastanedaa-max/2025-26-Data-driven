@@ -26,7 +26,10 @@ daily_load = df_load.resample('D').mean(numeric_only=True)/1000
 daily_gen = df_gen.resample('D').mean(numeric_only=True)/1000
 daily_types = df_types.resample('D').mean(numeric_only=True)/1000
 
-
+# Remove low-impact generation types (less than 1% of total energy)
+total_energy = daily_types.sum()
+share = total_energy / total_energy.sum()
+daily_types = daily_types.loc[:, share >= 0.01]
 
 #Plot daily Load & Generation
 
@@ -99,8 +102,12 @@ plt.show()
 #Correlation heatmap
 #When one variable changes, how likely is the other to change with it, and in which direction
 
+# Clean data: drop columns that are all NaN or constant
+daily_types_clean = daily_types.dropna(axis=1, how='all')  # remove empty columns
+daily_types_clean = daily_types_clean.loc[:, daily_types_clean.std() > 0.01]  # remove columns with no variation
+
 plt.figure(figsize=(12, 10))
-corr = daily_types.corr()
+corr = daily_types_clean.corr()
 sns.heatmap(corr, annot=True, cmap="coolwarm", fmt=".2f")
 plt.title("Correlation Heatmap: Generation Types")
 plt.tight_layout()

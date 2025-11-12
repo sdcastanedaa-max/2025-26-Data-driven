@@ -2,8 +2,8 @@ import pandas as pd
 
 # 定义输入和输出文件名
 # 请注意：这里假设您新文件的名称是 'TotalGen.csv'
-input_file = 'generation_by_type/Fossil_Gas_GENERATION.csv'
-output_file = 'generation_by_type/Fossil_Gas_Hourly.csv'
+input_file = 'generation_by_type/Wind_Onshore_GENERATION.csv'
+output_file = 'generation_by_type/Wind_Onshore_Hourly.csv'
 
 # 定义正确的时间格式字符串 (日/月/年 时:分:秒)
 DATE_FORMAT = "%d/%m/%Y %H:%M:%S"

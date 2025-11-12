@@ -73,7 +73,7 @@ plt.xlabel("Date")
 plt.ylabel("Power (GW)")
 plt.legend()
 plt.tight_layout()
-plt.savefig("plots/daily_load_vs_gen.png", dpi=300, bbox_inches='tight')
+plt.savefig("plots/daily_load_vs_gen_new.png", dpi=300, bbox_inches='tight')
 plt.show()
 
 # --- Generation by Type (Stacked Area) ---
@@ -82,7 +82,7 @@ plt.title("Daily Generation by Type (Stacked Area)")
 plt.xlabel("Date")
 plt.ylabel("Power (GW)")
 plt.tight_layout()
-plt.savefig("plots/gen_type.png", dpi=300, bbox_inches='tight')
+plt.savefig("plots/gen_type_new.png", dpi=300, bbox_inches='tight')
 plt.show()
 
 # --- Generation shares (overall + over time) ---
@@ -158,7 +158,7 @@ plt.title("Monthly Average: Load and Generation")
 plt.ylabel("Power (GW)")
 plt.xticks(rotation=45)
 plt.tight_layout()
-plt.savefig("plots/monthly_gen_load.png", dpi=300, bbox_inches='tight')
+plt.savefig("plots/monthly_gen_load_new.png", dpi=300, bbox_inches='tight')
 plt.show()
 
 # --- Peak Hour Analysis ---

@@ -1,8 +1,8 @@
 import os
 import pandas as pd
 
-input_folder = "generation_by_type"
-output_path = "generation_hourly_all_types.csv"
+input_folder = "generation_by_type_2025"
+output_path = "generation_hourly_wind.csv"
 
 hourly_dfs = {}
 

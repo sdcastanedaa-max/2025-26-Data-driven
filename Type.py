@@ -2,16 +2,16 @@ import pandas as pd
 import os
 
 # 定义输入文件
-input_file = 'AGGREGATED_GENERATION_PER_TYPE_GENERATION_202312312300-202412312300.csv'
+input_file = 'Gen_data/AGGREGATED_GENERATION_PER_TYPE_GENERATION_15min_2025.csv'
 # 定义输出文件夹
-output_dir = 'generation_by_type'
+output_dir = 'generation_by_type_2025'
 
 # 假定文件结构和之前的代码一致：
 # Col 0: Time Interval
 # Col 1: Country/Area
 # Col 2: Generation Type (这是我们用于拆分的列)
 # Col 3: Generation Value
-COLUMNS = ['Time_Interval', 'Country_Area', 'Production_Type', 'Generation_Value']
+COLUMNS = ['MTU (CET/CEST)', 'Area', 'Production Type', 'Generation(MW)']
 
 # 确保输出目录存在
 if not os.path.exists(output_dir):
@@ -30,10 +30,10 @@ try:
     )
 
     # 再次检查并确保 'Generation_Value' 列是数值类型 (可选但推荐，以防数据中仍有脏数据)
-    df['Generation_Value'] = pd.to_numeric(df['Generation_Value'], errors='coerce')
+    df['Generation(MW)'] = pd.to_numeric(df['Generation(MW)'], errors='coerce')
 
     # Step 2: 获取所有不同的 Generation Type
-    production_types = df['Production_Type'].unique()
+    production_types = df['Production Type'].unique()
 
     # 记录处理类型数量
     count = 0
@@ -52,10 +52,10 @@ try:
         safe_type_name = str(gen_type).replace('(', '').replace(')', '').replace('/', '_').replace(' ', '_').strip()
 
         # 2. 构造输出文件名
-        output_filename = os.path.join(output_dir, f"{safe_type_name}_GENERATION.csv")
+        output_filename = os.path.join(output_dir, f"{safe_type_name}_15min.csv")
 
         # 3. 过滤数据
-        df_filtered = df[df['Production_Type'] == gen_type].copy()
+        df_filtered = df[df['Production Type'] == gen_type].copy()
 
         # 4. 保存文件 (不包含索引)
         df_filtered.to_csv(output_filename, index=False, encoding='utf-8')

@@ -1,7 +1,7 @@
 import pandas as pd
 
 # === 配置 ===
-files = ["Wind_2022.csv", "Wind_2023.csv", "Wind_2024.csv"]
+files = ["Wind_2025.csv"]
 columns_to_keep = [
     "hourly__time",
     "hourly__apparent_temperature",
@@ -57,10 +57,10 @@ combined = pd.concat(dfs, ignore_index=True)
 combined["daily__weather_code"] = combined["daily__weather_code"].map(wmo_codes)
 
 # === 保存结果 ===
-combined.to_csv("Wind_2022_2024_combined.csv", index=False)
+combined.to_csv("Wind_2025_1.csv", index=False)
 
-print("✅ 数据合并完成！输出文件：Wind_2022_2024_combined.csv")
+print("✅ 数据合并完成！输出文件：Wind_2025_1.csv")
 
-wind_df = pd.read_csv("../Gen_data/Wind_2022_2024_combined.csv")
+wind_df = pd.read_csv("../Gen_data/Wind_2025_1.csv")
 wind_df['hourly__time'] = pd.to_datetime(wind_df['hourly__time'], format="%Y-%m-%dT%H:%M")
-wind_df.to_csv("Wind_2022_2024.csv", index=False)
+wind_df.to_csv("Wind_2025_1.csv", index=False)

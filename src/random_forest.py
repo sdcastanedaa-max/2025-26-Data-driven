@@ -3,6 +3,7 @@ import numpy as np
 from sklearn.ensemble import RandomForestRegressor
 from sklearn.impute import SimpleImputer
 import warnings
+
 warnings.filterwarnings('ignore')
 
 
@@ -14,7 +15,7 @@ class RandomForestModel:
     def __init__(self, **kwargs):
         default_params = {
             'n_estimators': 800,
-            'max_depth': 28,
+            'max_depth': None,
             'min_samples_split': 3,
             'min_samples_leaf': 1,
             'max_features': 0.7,
@@ -61,6 +62,21 @@ class RandomForestModel:
         return cloud, rain, storm
 
     # ------------------------------------
+    # 时间权重函数
+    # ------------------------------------
+    def _get_time_weights(self, df):
+        """
+        为10-20时的数据点分配更高的权重
+        """
+        df["ds"] = pd.to_datetime(df["ds"])
+        hours = df["ds"].dt.hour
+
+        # 创建权重数组，10-20时权重为2，其他时段权重为1
+        weights = np.where((hours >= 12) & (hours <= 17), 10.0, 1.0)
+
+        return weights
+
+    # ------------------------------------
     # 滞后特征 + 周期特征 + 天气特征
     # ------------------------------------
     def _create_features(self, df):
@@ -87,17 +103,6 @@ class RandomForestModel:
             df["ws3"] = ws ** 3
 
         # --------------------
-        # 空气密度 Air Density
-        # 简化公式：rho ≈ 353 / (T(K))
-        # T(K) = T(C)+273.15
-        # --------------------
-        if "hourly__apparent_temperature" in df.columns:
-            T = df["hourly__apparent_temperature"] + 273.15
-            df["air_density"] = 353 / T
-        else:
-            df["air_density"] = 1.225  # 默认海平面值
-
-        # --------------------
         # 滞后特征
         # --------------------
         if "hourly__wind_speed_100m" in df.columns:
@@ -115,7 +120,7 @@ class RandomForestModel:
             df["wind_direction_cos"] = df["wind_direction_cos"]
 
         # --------------------
-        # 你原本已经有的 wind_potential_index
+        # wind_potential_index
         # --------------------
         if "wind_potential_index" in df.columns:
             df["wind_potential_index"] = df["wind_potential_index"]
@@ -145,7 +150,7 @@ class RandomForestModel:
         keep = [
             "hour", "month", "hour_sin", "hour_cos", "month_sin", "month_cos",
             "hourly__wind_speed_100m", "ws2", "ws3",
-            "air_density", "wind_direction_sin", "wind_direction_cos",
+            "wind_direction_sin", "wind_direction_cos",
             "ws_lag1", "ws_lag3", "ws_lag6", "ws_roll3", "ws_roll6",
             "wind_potential_index",
             "cloud_level", "rain_level", "storm_level",
@@ -161,11 +166,14 @@ class RandomForestModel:
         features = self._create_features(df)
         target = df["y"]
 
+        # 获取时间权重
+        sample_weights = self._get_time_weights(df)
+
         # 缺失值填补
         features = self.imputer.fit_transform(features)
 
         self.feature_columns = features.shape[1]
-        self.model.fit(features, target)
+        self.model.fit(features, target, sample_weight=sample_weights)
         self.is_fitted = True
         return self
 

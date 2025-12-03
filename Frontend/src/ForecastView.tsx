@@ -1,149 +1,179 @@
 // frontend/src/ForecastView.tsx
-import React, { useMemo, useState } from "react";
+import React, { useEffect, useMemo, useState } from "react";
 import {
   LineChart,
   Line,
   XAxis,
   YAxis,
   Tooltip,
-  CartesianGrid,
   Legend,
+  CartesianGrid,
+  ResponsiveContainer,
 } from "recharts";
+import { computeErrorMetrics } from "./forecast";
 
-// ----------------- Types & helpers --------------------
+type Tech = "pv" | "wind";
 
-interface BasePoint {
-  tLabel: string; // x-axis label
-  pv: number;    // PV actual
-  wind: number;  // Wind actual
+interface ApiForecastPoint {
+  time: string;   // ISO string from backend
+  tech: Tech;
+  actual: number | null;
+  forecast: number;
 }
 
-interface ErrorMetrics {
-  mae: number;
-  rmse: number;
-  bias: number;
-  mape: number | null;
+interface ChartPoint {
+  time: Date;
+  label: string;
+  pvActual: number | null;
+  pvForecast: number | null;
+  windActual: number | null;
+  windForecast: number | null;
 }
 
-// same normal noise helper as before
-function randn(mean = 0, std = 1): number {
-  const u = 1 - Math.random();
-  const v = 1 - Math.random();
-  const z = Math.sqrt(-2.0 * Math.log(u)) * Math.cos(2.0 * Math.PI * v);
-  return mean + z * std;
-}
-
-// 72h of hourly PV/Wind data
-function generateBaseData(nHours: number = 72): BasePoint[] {
-  const now = new Date();
-  now.setMinutes(0, 0, 0);
-
-  const points: BasePoint[] = [];
-
-  for (let i = 0; i < nHours; i++) {
-    const t = new Date(now.getTime() + i * 3600 * 1000);
-    const hourOfDay = (t.getHours() + t.getMinutes() / 60) % 24;
-
-    // PV: daytime curve, peak ~15
-    const pvShape = Math.max(
-      0,
-      Math.sin(((hourOfDay - 6) / 12) * Math.PI),
-    );
-    const pv = 15 * pvShape + randn(0, 0.5);
-
-    // Wind: slower oscillation around ~20
-    const windShape =
-      0.7 +
-      0.15 * Math.sin((2 * Math.PI * i) / 48) +
-      0.1 * Math.sin((2 * Math.PI * i) / 8);
-    const wind = 20 * Math.max(0.1, windShape) + randn(0, 0.8);
-
-    points.push({
-      tLabel: t.toISOString().slice(5, 16), // "MM-DDTHH:MM"
-      pv,
-      wind,
-    });
-  }
-
-  return points;
-}
-
-// simple metric helper
-function computeErrorMetrics(
-  yTrue: number[],
-  yPred: number[],
-): ErrorMetrics {
-  const n = yTrue.length;
-  if (n === 0 || n !== yPred.length) {
-    return { mae: 0, rmse: 0, bias: 0, mape: null };
-  }
-
-  let mae = 0;
-  let mse = 0;
-  let bias = 0;
-  let mapeSum = 0;
-  let mapeCount = 0;
-
-  for (let i = 0; i < n; i++) {
-    const t = yTrue[i];
-    const p = yPred[i];
-    const diff = p - t;
-
-    mae += Math.abs(diff);
-    mse += diff * diff;
-    bias += diff;
-
-    if (t !== 0) {
-      mapeSum += Math.abs(diff / t);
-      mapeCount += 1;
-    }
-  }
-
-  mae /= n;
-  const rmse = Math.sqrt(mse / n);
-  bias /= n;
-  const mape = mapeCount > 0 ? (mapeSum / mapeCount) * 100 : null;
-
-  return { mae, rmse, bias, mape };
-}
-
-// ----------------- Component -------------------------
+const API_BASE = "http://127.0.0.1:8000/Backend/forecast";
 
 const ForecastView: React.FC = () => {
-  const [horizon, setHorizon] = useState<number>(48);
+  const [horizon, setHorizon] = useState<number>(48); // hours
+  const [allPoints, setAllPoints] = useState<ChartPoint[]>([]);
+  const [loading, setLoading] = useState<boolean>(false);
+  const [error, setError] = useState<string | null>(null);
 
-  // base PV/Wind data (72h) – same shape as the simple working example
-  const baseData = useMemo(() => generateBaseData(72), []);
+  // -------- Fetch forecast data from backend once on mount --------
+  useEffect(() => {
+  const fetchData = async () => {
+    setLoading(true);
+    setError(null);
 
-  // slice for current horizon
-  const data = useMemo(
-    () => baseData.slice(0, horizon),
-    [baseData, horizon],
+    try {
+      // FIXED WINDOW: Jan 1–4, 2025 (72 hours)
+      const start = new Date("2025-01-01T00:00:00Z");
+      const end = new Date("2025-01-04T00:00:00Z");
+
+      const iso = (d: Date) => d.toISOString();
+
+      const urlPv = `${API_BASE}?tech=pv&start=${encodeURIComponent(
+        iso(start),
+      )}&end=${encodeURIComponent(iso(end))}`;
+
+      const urlWind = `${API_BASE}?tech=wind&start=${encodeURIComponent(
+        iso(start),
+      )}&end=${encodeURIComponent(iso(end))}`;
+
+        const [pvResp, windResp] = await Promise.all([
+          fetch(urlPv),
+          fetch(urlWind),
+        ]);
+
+        if (!pvResp.ok || !windResp.ok) {
+          throw new Error("Backend returned an error status");
+        }
+
+        const pvData = (await pvResp.json()) as ApiForecastPoint[];
+        const windData = (await windResp.json()) as ApiForecastPoint[];
+
+        // Merge PV + wind by timestamp
+        const merged: Record<string, ChartPoint> = {};
+
+        const upsert = (p: ApiForecastPoint) => {
+          const key = p.time; // ISO string
+          if (!merged[key]) {
+            const t = new Date(p.time);
+            merged[key] = {
+              time: t,
+              label: t.toISOString().slice(5, 16), // "MM-DDTHH:MM"
+              pvActual: null,
+              pvForecast: null,
+              windActual: null,
+              windForecast: null,
+            };
+          }
+          const cp = merged[key];
+          if (p.tech === "pv") {
+            cp.pvActual = p.actual;
+            cp.pvForecast = p.forecast;
+          } else {
+            cp.windActual = p.actual;
+            cp.windForecast = p.forecast;
+          }
+        };
+
+        pvData.forEach(upsert);
+        windData.forEach(upsert);
+
+        const points = Object.values(merged).sort(
+          (a, b) => a.time.getTime() - b.time.getTime(),
+        );
+
+        setAllPoints(points);
+      } catch (err) {
+        console.error(err);
+        setError("Could not load forecast data from backend.");
+      } finally {
+        setLoading(false);
+      }
+    };
+
+    fetchData();
+  }, []);
+
+  // -------- Slice according to horizon ----------------------------
+
+  const sliced: ChartPoint[] = useMemo(
+    () => allPoints.slice(0, horizon),
+    [allPoints, horizon],
   );
 
-  // define "forecast" as a simple biased version of actual
-  const pvActualArr = data.map((p) => p.pv);
-  const pvForecastArr = data.map((p) => p.pv * 0.95 + 1.0); // MW-ish bias
-  const windActualArr = data.map((p) => p.wind);
-  const windForecastArr = data.map((p) => p.wind * 1.05 - 1.0);
+  // -------- Metrics (filter out missing actuals) ------------------
 
-  const pvMetrics = useMemo(
-    () => computeErrorMetrics(pvActualArr, pvForecastArr),
-    [pvActualArr, pvForecastArr],
-  );
+  const pvMetrics = useMemo(() => {
+    const yTrue: number[] = [];
+    const yPred: number[] = [];
+    sliced.forEach((p) => {
+      if (p.pvActual != null && p.pvForecast != null) {
+        yTrue.push(p.pvActual);
+        yPred.push(p.pvForecast);
+      }
+    });
+    return computeErrorMetrics(yTrue, yPred);
+  }, [sliced]);
 
-  const windMetrics = useMemo(
-    () => computeErrorMetrics(windActualArr, windForecastArr),
-    [windActualArr, windForecastArr],
-  );
+  const windMetrics = useMemo(() => {
+    const yTrue: number[] = [];
+    const yPred: number[] = [];
+    sliced.forEach((p) => {
+      if (p.windActual != null && p.windForecast != null) {
+        yTrue.push(p.windActual);
+        yPred.push(p.windForecast);
+      }
+    });
+    return computeErrorMetrics(yTrue, yPred);
+  }, [sliced]);
 
-  console.log("Forecast points:", data.length, data[0]);
+  // -------- Chart data for Recharts -------------------------------
+
+  const chartData = sliced.map((p) => ({
+    timeLabel: p.label,
+    pvActual: p.pvActual != null ? Math.round(p.pvActual) : null,
+    pvForecast: p.pvForecast != null ? Math.round(p.pvForecast) : null,
+    windActual: p.windActual != null ? Math.round(p.windActual) : null,
+    windForecast: p.windForecast != null ? Math.round(p.windForecast) : null,
+  }));
+
+  // ----------------------------------------------------------------
 
   return (
     <div>
       <h2 style={{ marginBottom: 8 }}>Spain PV &amp; Wind Forecast</h2>
 
       <div style={{ marginBottom: 16 }}>
+        {loading && (
+          <div style={{ fontSize: 13, opacity: 0.8 }}>
+            Loading forecast data from backend…
+          </div>
+        )}
+        {error && (
+          <div style={{ fontSize: 13, color: "#e74c3c" }}>{error}</div>
+        )}
         <label>
           Horizon (hours):{" "}
           <input
@@ -152,9 +182,7 @@ const ForecastView: React.FC = () => {
             max={72}
             step={6}
             value={horizon}
-            onChange={(e) =>
-              setHorizon(Number(e.target.value))
-            }
+            onChange={(e) => setHorizon(Number(e.target.value))}
           />
           <span style={{ marginLeft: 8 }}>{horizon} h</span>
         </label>
@@ -175,66 +203,67 @@ const ForecastView: React.FC = () => {
             padding: 12,
           }}
         >
-          <LineChart
-            width={800}
-            height={400}
-            data={data}
-          >
-            <CartesianGrid stroke="#1f2a3d" strokeDasharray="3 3" />
-            <XAxis
-              dataKey="tLabel"
-              tick={{ fontSize: 10 }}
-              minTickGap={20}
-            />
-            <YAxis
-              label={{
-                value: "Power (arbitrary units)",
-                angle: -90,
-                position: "insideLeft",
-              }}
-            />
-            <Tooltip />
-            <Legend />
-            {/* Actual series use the plain keys 'pv' and 'wind' */}
-            <Line
-              type="monotone"
-              dataKey="pv"
-              name="PV actual"
-              stroke="#f1c40f"
-              strokeWidth={2.5}
-              dot={false}
-              activeDot={{ r: 4 }}
-            />
-            <Line
-              type="monotone"
-              dataKey={(p: BasePoint) => p.pv * 0.95 + 1.0}
-              name="PV forecast"
-              stroke="#f39c12"
-              strokeDasharray="4 4"
-              strokeWidth={2}
-              dot={false}
-              activeDot={{ r: 3 }}
-            />
-            <Line
-              type="monotone"
-              dataKey="wind"
-              name="Wind actual"
-              stroke="#3498db"
-              strokeWidth={2.5}
-              dot={false}
-              activeDot={{ r: 4 }}
-            />
-            <Line
-              type="monotone"
-              dataKey={(p: BasePoint) => p.wind * 1.05 - 1.0}
-              name="Wind forecast"
-              stroke="#2980b9"
-              strokeDasharray="4 4"
-              strokeWidth={2}
-              dot={false}
-              activeDot={{ r: 3 }}
-            />
-          </LineChart>
+          <ResponsiveContainer width="100%" height={400}>
+            <LineChart data={chartData}>
+              <CartesianGrid stroke="#1f2a3d" strokeDasharray="3 3" />
+              <XAxis
+                dataKey="timeLabel"
+                tick={{ fontSize: 10 }}
+                minTickGap={20}
+              />
+              <YAxis
+                label={{
+                  value: "Power (MW)",
+                  angle: -90,
+                  position: "insideLeft",
+                }}
+              />
+              <Tooltip />
+              <Legend />
+              <Line
+                type="monotone"
+                dataKey="pvActual"
+                name="PV actual"
+                stroke="#f1c40f"
+                strokeWidth={2.5}
+                dot={false}
+                activeDot={{ r: 4 }}
+                connectNulls={false}
+              />
+              <Line
+                type="monotone"
+                dataKey="pvForecast"
+                name="PV forecast"
+                stroke="#f39c12"
+                strokeDasharray="4 4"
+                strokeWidth={2}
+                dot={false}
+                activeDot={{ r: 3 }}
+                connectNulls={false}
+              />
+              <Line
+                type="monotone"
+                dataKey="windActual"
+                name="Wind actual"
+                stroke="#3498db"
+                strokeWidth={2.5}
+                dot={false}
+                activeDot={{ r: 4 }}
+                connectNulls={false}
+              />
+              <Line
+                type="monotone"
+                dataKey="windForecast"
+                name="Wind forecast"
+                stroke="#2980b9"
+                strokeDasharray="4 4"
+                strokeWidth={2}
+                dot={false}
+                activeDot={{ r: 3 }}
+                connectNulls={false}
+              />
+            </LineChart>
+          </ResponsiveContainer>
         </div>
 
         {/* Metrics */}
@@ -249,22 +278,16 @@ const ForecastView: React.FC = () => {
           <h3>Model performance</h3>
 
           <h4 style={{ marginTop: 12 }}>PV</h4>
-          <MetricRow label="MAE" value={pvMetrics.mae} />
-          <MetricRow label="RMSE" value={pvMetrics.rmse} />
-          <MetricRow label="Bias" value={pvMetrics.bias} />
-          <MetricRow
-            label="MAPE (%)"
-            value={pvMetrics.mape}
-          />
+          <MetricRow label="MAE (MW)" value={pvMetrics.mae} />
+          <MetricRow label="RMSE (MW)" value={pvMetrics.rmse} />
+          <MetricRow label="Bias (MW)" value={pvMetrics.bias} />
+          <MetricRow label="MAPE (%)" value={pvMetrics.mape} />
 
           <h4 style={{ marginTop: 16 }}>Wind</h4>
-          <MetricRow label="MAE" value={windMetrics.mae} />
-          <MetricRow label="RMSE" value={windMetrics.rmse} />
-          <MetricRow label="Bias" value={windMetrics.bias} />
-          <MetricRow
-            label="MAPE (%)"
-            value={windMetrics.mape}
-          />
+          <MetricRow label="MAE (MW)" value={windMetrics.mae} />
+          <MetricRow label="RMSE (MW)" value={windMetrics.rmse} />
+          <MetricRow label="Bias (MW)" value={windMetrics.bias} />
+          <MetricRow label="MAPE (%)" value={windMetrics.mape} />
         </div>
       </div>
     </div>
@@ -284,11 +307,12 @@ const MetricRow: React.FC<{
   >
     <span style={{ opacity: 0.85 }}>{label}</span>
     <span style={{ fontVariantNumeric: "tabular-nums" }}>
-      {value === null ? "N/A" : value.toFixed(2)}
+      {value === null || Number.isNaN(value)
+        ? "N/A"
+        : value.toFixed(1)}
     </span>
   </div>
 );
 
 export default ForecastView;
-
 

@@ -34,8 +34,9 @@ def cors_debug():
 # 2) CSV paths + column names
 # -------------------------------------------------
 
-BASE_DIR = Path(__file__).resolve().parent           # .../Backend
-DATA_DIR = BASE_DIR.parent / "Prophet"               # .../Prophet
+BASE_DIR = Path(__file__).resolve().parent          # ...\Dashboard\Backend
+ROOT_DIR = BASE_DIR.parent.parent                   # ...\2025-26-Data-driven
+DATA_DIR = ROOT_DIR / "Prophet"                     # ...\2025-26-Data-driven\Prophet
 
 PV_CSV = DATA_DIR / "pv_forecast_1-10_comparison_2025.csv"
 WIND_CSV = DATA_DIR / "wind_forecast_2025_mar_sep_hourly.csv"

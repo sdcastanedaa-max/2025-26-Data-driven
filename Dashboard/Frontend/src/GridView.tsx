@@ -1,6 +1,6 @@
 // frontend/src/GridView.tsx
 import { useSimTime } from "./simTime";
-import React, { useState } from "react";
+import React, { useMemo, useState } from "react";
 import GridCanvas from "./GridCanvas";
 import { simulateLineFlows } from "./simulation";
 import { LINES, NODES } from "./gridData";
@@ -8,18 +8,18 @@ import type { GridNode, NodeType } from "./gridData";
 
 interface TooltipInfo {
   node: GridNode;
-  x: number; // canvas-relative coords
+  x: number;
   y: number;
 }
 
-// Node status for tooltip + table
 type NodeStatus = {
-  netPowerMW: number; // positive = net import, negative = net export
+  netPowerMW: number;
   isDisconnected: boolean;
   isOverloaded: boolean;
 };
 
-// Legend configuration: adjust keys to match your gridData.ts NodeType values
+type FlowMode = "sim" | "forecast";
+
 const LEGEND_ITEMS: { key: NodeType; label: string }[] = [
   { key: "pv", label: "PV farm" },
   { key: "wind", label: "Wind farm" },
@@ -32,12 +32,13 @@ const LEGEND_ITEMS: { key: NodeType; label: string }[] = [
 ];
 
 const GridView: React.FC = () => {
-  const tHours = useSimTime(); // global clock (keeps running across views)
+  const tHours = useSimTime();
 
   const [hoverInfo, setHoverInfo] = useState<TooltipInfo | null>(null);
   const [pinnedInfo, setPinnedInfo] = useState<TooltipInfo | null>(null);
 
-  // Legend visibility state: true = fully visible, false = dim to 30%
+  const [flowMode, setFlowMode] = useState<FlowMode>("sim");
+
   const [typeVisibility, setTypeVisibility] = useState<
     Record<NodeType, boolean>
   >(() => {
@@ -55,9 +56,17 @@ const GridView: React.FC = () => {
     }));
   };
 
-  // --- flows + node metrics ---
+  // --- compute flows once per render and share with canvas + table ---
 
-  const flows = simulateLineFlows(tHours);
+  const flows = useMemo(
+    () =>
+      // if you extended simulateLineFlows to take a mode argument,
+      // call it like: simulateLineFlows(tHours, flowMode)
+      simulateLineFlows(tHours),
+    [tHours /*, flowMode */],
+  );
+
+  // --- node metrics ---
 
   const nodeStatus: Record<string, NodeStatus> = {};
   NODES.forEach((n) => {
@@ -141,11 +150,57 @@ const GridView: React.FC = () => {
   return (
     <div>
       <h2 style={{ marginBottom: 8 }}>Spain Demo Grid View</h2>
-      <p style={{ opacity: 0.8 }}>
+      <p style={{ opacity: 0.8, marginBottom: 8 }}>
         Synthetic grid with wind, PV, fossil, nuclear, BESS and loads. Pulses
         move along lines in the direction of power flow; rare overloads and
         faults are shown in yellow/red.
       </p>
+
+      {/* mode selector */}
+      <div style={{ marginBottom: 12, fontSize: 13 }}>
+        <span style={{ marginRight: 8, opacity: 0.8 }}>Flow mode:</span>
+        <button
+          onClick={() => setFlowMode("sim")}
+          style={{
+            padding: "4px 10px",
+            borderRadius: "999px 0 0 999px",
+            border:
+              flowMode === "sim"
+                ? "1px solid #f1c40f"
+                : "1px solid #444c5a",
+            background:
+              flowMode === "sim" ? "#f1c40f22" : "rgba(0,0,0,0.15)",
+            color: "#f5f5f5",
+            cursor: "pointer",
+            fontSize: 12,
+          }}
+        >
+          Simulation
+        </button>
+        <button
+          onClick={() => setFlowMode("forecast")}
+          style={{
+            padding: "4px 10px",
+            borderRadius: "0 999px 999px 0",
+            border:
+              flowMode === "forecast"
+                ? "1px solid #f1c40f"
+                : "1px solid #444c5a",
+            borderLeft: "none",
+            background:
+              flowMode === "forecast" ? "#f1c40f22" : "rgba(0,0,0,0.15)",
+            color: "#f5f5f5",
+            cursor: "pointer",
+            fontSize: 12,
+          }}
+        >
+          Forecast-driven
+        </button>
+        <span style={{ marginLeft: 10, opacity: 0.7, fontSize: 11 }}>
+          {/* purely cosmetic unless you wire simulateLineFlows(mode) */}
+          (uses same visualisation; hook into forecast data in simulation.ts)
+        </span>
+      </div>
 
       <div
         style={{
@@ -159,9 +214,10 @@ const GridView: React.FC = () => {
         <div style={{ position: "relative" }}>
           <GridCanvas
             tHours={tHours}
+            flows={flows}
             onHover={handleHover}
             onClickNode={handleClickNode}
-            typeVisibility={typeVisibility} // NEW: pass visibility map
+            typeVisibility={typeVisibility}
           />
 
           {activeTooltip && (
@@ -171,13 +227,8 @@ const GridView: React.FC = () => {
             />
           )}
 
-          {/* Legend under the map */}
-          <div
-            style={{
-              marginTop: 12,
-              fontSize: 12,
-            }}
-          >
+          {/* legend under map */}
+          <div style={{ marginTop: 12, fontSize: 12 }}>
             <div style={{ opacity: 0.8, marginBottom: 4 }}>
               Asset legend (click to dim / undim):
             </div>
@@ -213,7 +264,7 @@ const GridView: React.FC = () => {
           </div>
         </div>
 
-        {/* RIGHT: table + current time */}
+        {/* RIGHT: table */}
         <div
           style={{
             background: "#101826",
@@ -233,9 +284,7 @@ const GridView: React.FC = () => {
             <p style={{ opacity: 0.9, fontSize: 12, marginTop: 4 }}>
               Selected asset:{" "}
               <strong>{activeTooltip.node.name}</strong>{" "}
-              <span style={{ opacity: 0.8 }}>
-                ({activeTooltip.node.id})
-              </span>
+              <span style={{ opacity: 0.8 }}>({activeTooltip.node.id})</span>
             </p>
           )}
 
@@ -321,7 +370,6 @@ const Td: React.FC<{ children: React.ReactNode }> = ({ children }) => (
   </td>
 );
 
-// Tooltip component, positioned over the canvas
 const Tooltip: React.FC<{
   info: TooltipInfo;
   status: NodeStatus;
@@ -368,9 +416,7 @@ const Tooltip: React.FC<{
         maxWidth: 220,
       }}
     >
-      <div style={{ fontWeight: 600, marginBottom: 4 }}>
-        {node.name}
-      </div>
+      <div style={{ fontWeight: 600, marginBottom: 4 }}>{node.name}</div>
       <div style={{ opacity: 0.85, marginBottom: 2 }}>
         ID: <code>{node.id}</code>
       </div>
@@ -384,4 +430,3 @@ const Tooltip: React.FC<{
 };
 
 export default GridView;
-

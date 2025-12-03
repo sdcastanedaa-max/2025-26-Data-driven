@@ -2,18 +2,18 @@
 import React, { useEffect, useRef } from "react";
 import type { GridNode, NodeType } from "./gridData";
 import { NODES, LINES } from "./gridData";
-import { simulateLineFlows } from "./simulation";
+import type { LineFlow } from "./simulation";
 
 interface GridCanvasProps {
   tHours: number;
+  flows: Record<string, LineFlow>;
+  typeVisibility: Record<NodeType, boolean>;
   onHover?: (info: { node: GridNode | null; x: number; y: number }) => void;
   onClickNode?: (info: {
     node: GridNode | null;
     x: number;
     y: number;
   }) => void;
-  // NEW: per-type visibility from the legend
-  typeVisibility?: Record<NodeType, boolean>;
 }
 
 const NODE_COLOR: Record<NodeType, string> = {
@@ -27,7 +27,6 @@ const NODE_COLOR: Record<NodeType, string> = {
   load_ind: "#ff9966",
 };
 
-// when you have PNG icons, place them in /public/icons and uncomment
 const ICON_PATHS: Partial<Record<NodeType, string>> = {
   pv: "/icons/pv.png",
   wind: "/icons/wind.png",
@@ -41,20 +40,20 @@ const ICON_PATHS: Partial<Record<NodeType, string>> = {
 
 const GridCanvas: React.FC<GridCanvasProps> = ({
   tHours,
+  flows,
+  typeVisibility,
   onHover,
   onClickNode,
-  typeVisibility,
 }) => {
   const canvasRef = useRef<HTMLCanvasElement | null>(null);
   const iconImagesRef = useRef<Partial<Record<NodeType, HTMLImageElement>>>({});
 
-  // zoom / pan refs
   const zoomRef = useRef(1);
   const offsetRef = useRef({ x: 0, y: 0 });
   const isDraggingRef = useRef(false);
   const lastMouseRef = useRef<{ x: number; y: number } | null>(null);
 
-  // Load icons once
+  // load icons once
   useEffect(() => {
     const icons: Partial<Record<NodeType, HTMLImageElement>> = {};
     (Object.keys(ICON_PATHS) as NodeType[]).forEach((type) => {
@@ -67,7 +66,7 @@ const GridCanvas: React.FC<GridCanvasProps> = ({
     iconImagesRef.current = icons;
   }, []);
 
-  // Drawing
+  // drawing
   useEffect(() => {
     const canvas = canvasRef.current;
     if (!canvas) return;
@@ -98,7 +97,6 @@ const GridCanvas: React.FC<GridCanvasProps> = ({
       return { cx, cy };
     };
 
-    const flows = simulateLineFlows(tHours);
     const nodeById: Record<string, GridNode> = {};
     NODES.forEach((n) => (nodeById[n.id] = n));
 
@@ -110,6 +108,8 @@ const GridCanvas: React.FC<GridCanvasProps> = ({
     // lines
     for (const line of LINES) {
       const f = flows[line.id];
+      if (!f) continue;
+
       const fromNode = nodeById[line.from];
       const toNode = nodeById[line.to];
 
@@ -122,11 +122,10 @@ const GridCanvas: React.FC<GridCanvasProps> = ({
 
       const dx = p2.cx - p1.cx;
       const dy = p2.cy - p1.cy;
-      const length = Math.hypot(dx, dy) || 1;
       const coreWidth = 2 + 4 * Math.min(f.loading, 1.5);
       const glowWidth = coreWidth + 6;
 
-      // Glow
+      // glow
       ctx.save();
       ctx.lineCap = "round";
       ctx.strokeStyle =
@@ -142,7 +141,7 @@ const GridCanvas: React.FC<GridCanvasProps> = ({
       ctx.stroke();
       ctx.restore();
 
-      // Core
+      // core
       ctx.save();
       ctx.strokeStyle = baseColor;
       ctx.lineWidth = coreWidth;
@@ -152,7 +151,7 @@ const GridCanvas: React.FC<GridCanvasProps> = ({
       ctx.stroke();
       ctx.restore();
 
-      // Moving blobs for direction
+      // moving blobs along the line, using tHours
       const elapsedSeconds = tHours * 3600;
       const cycleSeconds = 3;
       const phase = (elapsedSeconds / cycleSeconds) % 1;
@@ -194,30 +193,24 @@ const GridCanvas: React.FC<GridCanvasProps> = ({
       }
     }
 
-    // nodes
+    // nodes (respect legend visibility)
     const icons = iconImagesRef.current;
     for (const node of NODES) {
+      if (!typeVisibility[node.type]) continue;
+
       const { cx, cy } = worldToCanvas(node.x, node.y);
       const icon = icons[node.type];
-
-      // visibility: default true, dim to 30% when toggled off
-      const visible =
-        typeVisibility && node.type in typeVisibility
-          ? typeVisibility[node.type]
-          : true;
-      const alpha = visible ? 1 : 0.3;
 
       if (icon && icon.complete) {
         const size = 52;
         ctx.save();
-        ctx.globalAlpha = alpha;
+        ctx.globalAlpha = 0.9;
         ctx.drawImage(icon, cx - size / 2, cy - size / 2, size, size);
         ctx.restore();
       } else {
         const color = NODE_COLOR[node.type];
         const radius = 10;
         ctx.save();
-        ctx.globalAlpha = alpha;
         ctx.fillStyle = color;
         ctx.beginPath();
         ctx.arc(cx, cy, radius, 0, Math.PI * 2);
@@ -228,14 +221,11 @@ const GridCanvas: React.FC<GridCanvasProps> = ({
         ctx.restore();
       }
     }
-  }, [tHours, typeVisibility]); // redraw when time OR legend changes
+  }, [tHours, flows, typeVisibility]);
 
-  // -------- Mouse / wheel handling (zoom, pan, hover, click) -----
+  // -------------- mouse / wheel handlers ---------------
 
-  const findNearestNode = (
-    mouseX: number,
-    mouseY: number,
-  ): GridNode | null => {
+  const findNearestNode = (mouseX: number, mouseY: number): GridNode | null => {
     const canvas = canvasRef.current;
     if (!canvas) return null;
 
@@ -250,7 +240,7 @@ const GridCanvas: React.FC<GridCanvasProps> = ({
 
     let bestNode: GridNode | null = null;
     let bestDist2 = Infinity;
-    const threshold = 26; // px
+    const threshold = 26;
 
     for (const node of NODES) {
       const cx = width / 2 + node.x * scale + offset.x;
@@ -297,7 +287,6 @@ const GridCanvas: React.FC<GridCanvasProps> = ({
     const canvas = canvasRef.current;
     if (!canvas) return;
 
-    // click detection (small movement)
     if (lastMouseRef.current) {
       const dx = e.clientX - lastMouseRef.current.x;
       const dy = e.clientY - lastMouseRef.current.y;
@@ -331,7 +320,6 @@ const GridCanvas: React.FC<GridCanvasProps> = ({
     const mouseX = e.clientX - rect.left;
     const mouseY = e.clientY - rect.top;
 
-    // panning
     if (isDraggingRef.current && lastMouseRef.current) {
       const dx = e.clientX - lastMouseRef.current.x;
       const dy = e.clientY - lastMouseRef.current.y;
@@ -342,7 +330,6 @@ const GridCanvas: React.FC<GridCanvasProps> = ({
       lastMouseRef.current = { x: e.clientX, y: e.clientY };
     }
 
-    // hover detection
     if (onHover) {
       const node = findNearestNode(mouseX, mouseY);
       onHover({ node: node ?? null, x: mouseX, y: mouseY });
@@ -369,4 +356,3 @@ const GridCanvas: React.FC<GridCanvasProps> = ({
 };
 
 export default GridCanvas;
-

@@ -11,188 +11,327 @@ import {
   ResponsiveContainer,
 } from "recharts";
 import { computeErrorMetrics } from "./forecast";
+import { useForecastWindow } from "./ForecastWindowContext";
 
-type Tech = "pv" | "wind";
-
-interface ApiForecastPoint {
-  time: string;   // ISO string from backend
-  tech: Tech;
-  actual: number | null;
-  forecast: number;
-}
-
-interface ChartPoint {
+type SeriesPoint = {
   time: Date;
-  label: string;
   pvActual: number | null;
-  pvForecast: number | null;
+  pvForecast: number;
   windActual: number | null;
-  windForecast: number | null;
+  windForecast: number;
+};
+
+const BACKEND_BASE = "http://127.0.0.1:8000/Backend";
+
+// --------- helpers ------------------------------------------------
+
+const DEFAULT_START = new Date(Date.UTC(2025, 0, 1)); // 2025-01-01 00:00Z
+const DEFAULT_HOURS = 72;
+
+function toInputDateString(d: Date): string {
+  // "YYYY-MM-DD" in UTC
+  const y = d.getUTCFullYear();
+  const m = String(d.getUTCMonth() + 1).padStart(2, "0");
+  const day = String(d.getUTCDate()).padStart(2, "0");
+  return `${y}-${m}-${day}`;
 }
 
-const API_BASE = "http://127.0.0.1:8000/Backend/forecast";
+// ------------------------------------------------------------------
 
 const ForecastView: React.FC = () => {
-  const [horizon, setHorizon] = useState<number>(48); // hours
-  const [allPoints, setAllPoints] = useState<ChartPoint[]>([]);
-  const [loading, setLoading] = useState<boolean>(false);
-  const [error, setError] = useState<string | null>(null);
+  const { start, end, hours, setWindow } = useForecastWindow();
 
-  // -------- Fetch forecast data from backend once on mount --------
+  // Make sure we always have a valid window, even if context is still default
+  const effectiveStart = useMemo(
+    () => start ?? DEFAULT_START,
+    [start],
+  );
+
+  const effectiveHours = hours ?? DEFAULT_HOURS;
+
+  const effectiveEnd = useMemo(() => {
+    if (end) return end;
+    return new Date(
+      effectiveStart.getTime() + effectiveHours * 3600 * 1000,
+    );
+  }, [end, effectiveStart, effectiveHours]);
+
+  // ---- UI state for selectors (kept in sync with effectiveStart) ----
+
+  const [calendarValue, setCalendarValue] = useState<string>(
+    toInputDateString(effectiveStart),
+  );
+  const [dayStr, setDayStr] = useState<string>(
+    String(effectiveStart.getUTCDate()).padStart(2, "0"),
+  );
+  const [monthStr, setMonthStr] = useState<string>(
+    String(effectiveStart.getUTCMonth() + 1).padStart(2, "0"),
+  );
+  const [yearStr, setYearStr] = useState<string>(
+    String(effectiveStart.getUTCFullYear()),
+  );
+
+  // whenever effectiveStart changes (e.g. from Grid view), sync the controls
   useEffect(() => {
-  const fetchData = async () => {
-    setLoading(true);
-    setError(null);
+    const d = effectiveStart;
+    setCalendarValue(toInputDateString(d));
+    setDayStr(String(d.getUTCDate()).padStart(2, "0"));
+    setMonthStr(String(d.getUTCMonth() + 1).padStart(2, "0"));
+    setYearStr(String(d.getUTCFullYear()));
+  }, [effectiveStart.getTime()]);
 
-    try {
-      // FIXED WINDOW: Jan 1–4, 2025 (72 hours)
-      const start = new Date("2025-01-01T00:00:00Z");
-      const end = new Date("2025-01-04T00:00:00Z");
+  // ---- data from backend ----
 
-      const iso = (d: Date) => d.toISOString();
+  const [data, setData] = useState<SeriesPoint[]>([]);
+  const [error, setError] = useState<string | null>(null);
+  const [loading, setLoading] = useState(false);
 
-      const urlPv = `${API_BASE}?tech=pv&start=${encodeURIComponent(
-        iso(start),
-      )}&end=${encodeURIComponent(iso(end))}`;
+  useEffect(() => {
+    let cancelled = false;
 
-      const urlWind = `${API_BASE}?tech=wind&start=${encodeURIComponent(
-        iso(start),
-      )}&end=${encodeURIComponent(iso(end))}`;
+    async function fetchData() {
+      setLoading(true);
+      setError(null);
 
-        const [pvResp, windResp] = await Promise.all([
+      const startISO = effectiveStart.toISOString();
+      const endISO = effectiveEnd.toISOString();
+
+      try {
+        const urlPv = `${BACKEND_BASE}/forecast?tech=pv&start=${encodeURIComponent(
+          startISO,
+        )}&end=${encodeURIComponent(endISO)}`;
+        const urlWind = `${BACKEND_BASE}/forecast?tech=wind&start=${encodeURIComponent(
+          startISO,
+        )}&end=${encodeURIComponent(endISO)}`;
+
+        const [respPv, respWind] = await Promise.all([
           fetch(urlPv),
           fetch(urlWind),
         ]);
 
-        if (!pvResp.ok || !windResp.ok) {
-          throw new Error("Backend returned an error status");
+        if (!respPv.ok || !respWind.ok) {
+          throw new Error(
+            `Backend error: PV ${respPv.status}, wind ${respWind.status}`,
+          );
         }
 
-        const pvData = (await pvResp.json()) as ApiForecastPoint[];
-        const windData = (await windResp.json()) as ApiForecastPoint[];
+        const pvJson = await respPv.json();
+        const windJson = await respWind.json();
 
-        // Merge PV + wind by timestamp
-        const merged: Record<string, ChartPoint> = {};
+        if (cancelled) return;
 
-        const upsert = (p: ApiForecastPoint) => {
-          const key = p.time; // ISO string
-          if (!merged[key]) {
-            const t = new Date(p.time);
-            merged[key] = {
-              time: t,
-              label: t.toISOString().slice(5, 16), // "MM-DDTHH:MM"
-              pvActual: null,
-              pvForecast: null,
-              windActual: null,
-              windForecast: null,
-            };
-          }
-          const cp = merged[key];
-          if (p.tech === "pv") {
-            cp.pvActual = p.actual;
-            cp.pvForecast = p.forecast;
-          } else {
-            cp.windActual = p.actual;
-            cp.windForecast = p.forecast;
-          }
-        };
+        // Index wind points by ISO time string
+        const windByTime = new Map<string, any>();
+        for (const w of windJson) {
+          windByTime.set(w.time, w);
+        }
 
-        pvData.forEach(upsert);
-        windData.forEach(upsert);
+        const merged: SeriesPoint[] = pvJson.map((p: any) => {
+          const t = new Date(p.time);
+          const w = windByTime.get(p.time);
+          return {
+            time: t,
+            pvActual:
+              p.actual === null || p.actual === undefined
+                ? null
+                : Number(p.actual),
+            pvForecast: Number(p.forecast),
+            windActual:
+              w && w.actual !== null && w.actual !== undefined
+                ? Number(w.actual)
+                : null,
+            windForecast: w ? Number(w.forecast) : 0,
+          };
+        });
 
-        const points = Object.values(merged).sort(
-          (a, b) => a.time.getTime() - b.time.getTime(),
-        );
-
-        setAllPoints(points);
-      } catch (err) {
-        console.error(err);
-        setError("Could not load forecast data from backend.");
+        setData(merged);
+      } catch (e: any) {
+        console.error("Error fetching forecast data", e);
+        if (!cancelled) {
+          setError("Could not load forecast data from backend.");
+          setData([]);
+        }
       } finally {
-        setLoading(false);
+        if (!cancelled) setLoading(false);
       }
-    };
+    }
 
     fetchData();
-  }, []);
+    return () => {
+      cancelled = true;
+    };
+  }, [effectiveStart.getTime(), effectiveEnd.getTime()]);
 
-  // -------- Slice according to horizon ----------------------------
+  // ---- metrics & chart data ----
 
-  const sliced: ChartPoint[] = useMemo(
-    () => allPoints.slice(0, horizon),
-    [allPoints, horizon],
+  const chartData = useMemo(
+    () =>
+      data.map((p) => ({
+        timeLabel: p.time.toISOString().slice(5, 16), // "MM-DDTHH:MM"
+        pvActual: p.pvActual === null ? null : Math.round(p.pvActual),
+        pvForecast: Math.round(p.pvForecast),
+        windActual:
+          p.windActual === null ? null : Math.round(p.windActual),
+        windForecast: Math.round(p.windForecast),
+      })),
+    [data],
   );
 
-  // -------- Metrics (filter out missing actuals) ------------------
-
   const pvMetrics = useMemo(() => {
-    const yTrue: number[] = [];
-    const yPred: number[] = [];
-    sliced.forEach((p) => {
-      if (p.pvActual != null && p.pvForecast != null) {
-        yTrue.push(p.pvActual);
-        yPred.push(p.pvForecast);
-      }
-    });
-    return computeErrorMetrics(yTrue, yPred);
-  }, [sliced]);
+    const actual = data
+      .map((p) => p.pvActual)
+      .filter((v): v is number => v !== null);
+    if (actual.length === 0) return { mae: 0, rmse: 0, bias: 0, mape: null };
+    const forecast = data.map((p) => p.pvForecast);
+    return computeErrorMetrics(actual, forecast);
+  }, [data]);
 
   const windMetrics = useMemo(() => {
-    const yTrue: number[] = [];
-    const yPred: number[] = [];
-    sliced.forEach((p) => {
-      if (p.windActual != null && p.windForecast != null) {
-        yTrue.push(p.windActual);
-        yPred.push(p.windForecast);
-      }
-    });
-    return computeErrorMetrics(yTrue, yPred);
-  }, [sliced]);
+    const actual = data
+      .map((p) => p.windActual)
+      .filter((v): v is number => v !== null);
+    if (actual.length === 0) return { mae: 0, rmse: 0, bias: 0, mape: null };
+    const forecast = data.map((p) => p.windForecast);
+    return computeErrorMetrics(actual, forecast);
+  }, [data]);
 
-  // -------- Chart data for Recharts -------------------------------
+  // ---- handlers for selectors ------------------------------------
 
-  const chartData = sliced.map((p) => ({
-    timeLabel: p.label,
-    pvActual: p.pvActual != null ? Math.round(p.pvActual) : null,
-    pvForecast: p.pvForecast != null ? Math.round(p.pvForecast) : null,
-    windActual: p.windActual != null ? Math.round(p.windActual) : null,
-    windForecast: p.windForecast != null ? Math.round(p.windForecast) : null,
-  }));
+  const applyManualDate = () => {
+    const y = Number(yearStr);
+    const m = Number(monthStr);
+    const d = Number(dayStr);
+    if (
+      !Number.isFinite(y) ||
+      !Number.isFinite(m) ||
+      !Number.isFinite(d)
+    ) {
+      return;
+    }
+    // UTC midnight
+    const newStart = new Date(Date.UTC(y, m - 1, d, 0, 0, 0));
+    if (isNaN(newStart.getTime())) return;
 
-  // ----------------------------------------------------------------
+    setWindow(newStart, effectiveHours);
+  };
+
+  const handleCalendarChange: React.ChangeEventHandler<
+    HTMLInputElement
+  > = (e) => {
+    const value = e.target.value;
+    setCalendarValue(value);
+    if (!value) return;
+    const newStart = new Date(`${value}T00:00:00Z`);
+    if (!isNaN(newStart.getTime())) {
+      setWindow(newStart, effectiveHours);
+    }
+  };
+
+  // ---- render ----------------------------------------------------
 
   return (
-    <div>
+    <div
+      style={{
+        width: "100%",
+        maxWidth: "100%",         // match your GridView / App main
+        margin: "0 auto",
+        boxSizing: "border-box",
+      }}
+    >
       <h2 style={{ marginBottom: 8 }}>Spain PV &amp; Wind Forecast</h2>
 
-      <div style={{ marginBottom: 16 }}>
-        {loading && (
-          <div style={{ fontSize: 13, opacity: 0.8 }}>
-            Loading forecast data from backend…
+      <p style={{ fontSize: 12, opacity: 0.8, marginBottom: 4 }}>
+        Window: {toInputDateString(effectiveStart)} →{" "}
+        {toInputDateString(effectiveEnd)} ({effectiveHours} hours)
+      </p>
+
+      {error && (
+        <p style={{ color: "#e74c3c", marginBottom: 8 }}>
+          {error}
+        </p>
+      )}
+
+      {/* Date selectors */}
+      <div
+        style={{
+          display: "flex",
+          flexWrap: "wrap",
+          gap: 16,
+          marginBottom: 16,
+          alignItems: "center",
+        }}
+      >
+        <div>
+          <div style={{ fontSize: 12, opacity: 0.8 }}>
+            Start date (calendar)
           </div>
-        )}
-        {error && (
-          <div style={{ fontSize: 13, color: "#e74c3c" }}>{error}</div>
-        )}
-        <label>
-          Horizon (hours):{" "}
           <input
-            type="range"
-            min={24}
-            max={72}
-            step={6}
-            value={horizon}
-            onChange={(e) => setHorizon(Number(e.target.value))}
+            type="date"
+            value={calendarValue}
+            onChange={handleCalendarChange}
+            style={{
+              marginTop: 4,
+              padding: "4px 6px",
+              borderRadius: 4,
+              border: "1px solid #2c3e50",
+              background: "#050814",
+              color: "#f5f5f5",
+            }}
           />
-          <span style={{ marginLeft: 8 }}>{horizon} h</span>
-        </label>
+        </div>
+
+        <div>
+          <div style={{ fontSize: 12, opacity: 0.8 }}>
+            Start date (manual)
+          </div>
+          <div style={{ display: "flex", gap: 6, marginTop: 4 }}>
+            <input
+              type="text"
+              value={dayStr}
+              onChange={(e) => setDayStr(e.target.value)}
+              style={{ width: 32 }}
+              maxLength={2}
+              placeholder="DD"
+            />
+            <input
+              type="text"
+              value={monthStr}
+              onChange={(e) => setMonthStr(e.target.value)}
+              style={{ width: 32 }}
+              maxLength={2}
+              placeholder="MM"
+            />
+            <input
+              type="text"
+              value={yearStr}
+              onChange={(e) => setYearStr(e.target.value)}
+              style={{ width: 52 }}
+              maxLength={4}
+              placeholder="YYYY"
+            />
+            <button
+              onClick={applyManualDate}
+              style={{
+                padding: "2px 10px",
+                borderRadius: 4,
+                border: "1px solid #f5c242",
+                background: "#f5c242",
+                color: "#000",
+                cursor: "pointer",
+                fontSize: 12,
+              }}
+            >
+              Apply
+            </button>
+          </div>
+        </div>
       </div>
 
       <div
         style={{
           display: "grid",
           gridTemplateColumns: "2.3fr 1fr",
-          gap: "16px",
+          gap: 16,
         }}
       >
         {/* Chart */}
@@ -228,7 +367,7 @@ const ForecastView: React.FC = () => {
                 strokeWidth={2.5}
                 dot={false}
                 activeDot={{ r: 4 }}
-                connectNulls={false}
+                connectNulls
               />
               <Line
                 type="monotone"
@@ -239,7 +378,6 @@ const ForecastView: React.FC = () => {
                 strokeWidth={2}
                 dot={false}
                 activeDot={{ r: 3 }}
-                connectNulls={false}
               />
               <Line
                 type="monotone"
@@ -249,7 +387,7 @@ const ForecastView: React.FC = () => {
                 strokeWidth={2.5}
                 dot={false}
                 activeDot={{ r: 4 }}
-                connectNulls={false}
+                connectNulls
               />
               <Line
                 type="monotone"
@@ -260,7 +398,6 @@ const ForecastView: React.FC = () => {
                 strokeWidth={2}
                 dot={false}
                 activeDot={{ r: 3 }}
-                connectNulls={false}
               />
             </LineChart>
           </ResponsiveContainer>
@@ -290,6 +427,12 @@ const ForecastView: React.FC = () => {
           <MetricRow label="MAPE (%)" value={windMetrics.mape} />
         </div>
       </div>
+
+      {loading && (
+        <p style={{ marginTop: 8, fontSize: 12, opacity: 0.8 }}>
+          Loading data…
+        </p>
+      )}
     </div>
   );
 };
@@ -307,12 +450,9 @@ const MetricRow: React.FC<{
   >
     <span style={{ opacity: 0.85 }}>{label}</span>
     <span style={{ fontVariantNumeric: "tabular-nums" }}>
-      {value === null || Number.isNaN(value)
-        ? "N/A"
-        : value.toFixed(1)}
+      {value === null ? "N/A" : value.toFixed(1)}
     </span>
   </div>
 );
 
 export default ForecastView;
-

@@ -12,6 +12,82 @@ export interface LineFlow {
 }
 
 // -----------------------------------------------------------------------------
+// NEW: forecast totals + allocation helper
+// -----------------------------------------------------------------------------
+
+export type ForecastTotals = {
+  pvMW: number | null;
+  windMW: number | null;
+};
+
+/**
+ * Given system-level forecast totals (MW) for PV and Wind,
+ * allocate them to individual nodes in proportion to installed capacity.
+ *
+ * Returns a map: nodeId -> injection_MW (only PV/Wind nodes get > 0).
+ */
+export function allocateForecastToNodes(
+  totals: ForecastTotals | undefined
+): Record<string, number> {
+  const injections: Record<string, number> = {};
+
+  // Default all nodes to 0
+  NODES.forEach((n) => {
+    injections[n.id] = 0;
+  });
+
+  if (!totals) return injections;
+
+  // ------- PV allocation -------
+  const pvNodes = NODES.filter((n) => n.type === "pv");
+  const totalPvCap = pvNodes.reduce(
+    (acc, n) => acc + (n.capacity_MW ?? 0),
+    0
+  );
+
+  if (totals.pvMW != null && totalPvCap > 0) {
+    pvNodes.forEach((n) => {
+      const cap = n.capacity_MW ?? 0;
+      if (cap <= 0) return;
+
+      const share = cap / totalPvCap;
+      let p = share * totals.pvMW;
+
+      // clamp to [0, capacity]
+      if (p < 0) p = 0;
+      if (p > cap) p = cap;
+
+      injections[n.id] = p;
+    });
+  }
+
+  // ------- Wind allocation -------
+  const windNodes = NODES.filter((n) => n.type === "wind");
+  const totalWindCap = windNodes.reduce(
+    (acc, n) => acc + (n.capacity_MW ?? 0),
+    0
+  );
+
+  if (totals.windMW != null && totalWindCap > 0) {
+    windNodes.forEach((n) => {
+      const cap = n.capacity_MW ?? 0;
+      if (cap <= 0) return;
+
+      const share = cap / totalWindCap;
+      let p = share * totals.windMW;
+
+      if (p < 0) p = 0;
+      if (p > cap) p = cap;
+
+      // += just in case a node is "hybrid" in your toy world
+      injections[n.id] += p;
+    });
+  }
+
+  return injections;
+}
+
+// -----------------------------------------------------------------------------
 // NODE SIGNS
 //   +1 : pure generators (wind, pv, fossil, nuclear)
 //   -1 : pure loads (load_res, load_ind)
@@ -95,10 +171,30 @@ function maybeUpdateEvent(tHours: number, lines: GridLine[]) {
 // -----------------------------------------------------------------------------
 // MAIN SIMULATION
 // -----------------------------------------------------------------------------
+//
+// Extended signature:
+//   simulateLineFlows(tHours)                      // old behavior
+//   simulateLineFlows(tHours, { useForecast, forecastTotals }) // new option
+// -----------------------------------------------------------------------------
 
-export function simulateLineFlows(tHours: number): Record<string, LineFlow> {
+export function simulateLineFlows(
+  tHours: number,
+  opts?: {
+    useForecast?: boolean;
+    forecastTotals?: ForecastTotals;
+  }
+): Record<string, LineFlow> {
   const nodeById: Record<string, GridNode> = {};
   NODES.forEach((n) => (nodeById[n.id] = n));
+
+  const useForecast = opts?.useForecast ?? false;
+  const forecastTotals = opts?.forecastTotals;
+
+  // capacity-weighted node injections for PV/Wind if forecast mode is on
+  const forecastNodeInjection: Record<string, number> | null =
+    useForecast && forecastTotals
+      ? allocateForecastToNodes(forecastTotals)
+      : null;
 
   maybeUpdateEvent(tHours, LINES);
 
@@ -168,6 +264,33 @@ export function simulateLineFlows(tHours: number): Record<string, LineFlow> {
 
     // clamp baseLoading to avoid natural permanent yellow/red
     baseLoading = Math.min(baseLoading, 0.85);
+
+    // --- NEW: adjust loading based on forecast injections on PV/Wind ----
+    if (forecastNodeInjection) {
+      // For each endpoint, compute how "full" PV/Wind plants are vs capacity
+      const ratioForNode = (n: GridNode): number => {
+        if (n.type !== "pv" && n.type !== "wind") {
+          return 1.0; // non-RES node: neutral
+        }
+        const cap = n.capacity_MW || 0;
+        if (cap <= 0) return 1.0;
+
+        const inj = forecastNodeInjection[n.id] ?? 0;
+        const r = inj / cap;
+        // clamp to 0..1.5 to avoid crazy extremes
+        return Math.min(Math.max(r, 0), 1.5);
+      };
+
+      const rFrom = ratioForNode(nFrom);
+      const rTo = ratioForNode(nTo);
+      const avgRatio = (rFrom + rTo) / 2.0;
+
+      // scale loading based on avgRatio:
+      //  - ~0 generation => ~0.5x of normal
+      //  - full generation => ~1.2x of normal (but still capped later)
+      const scale = 0.5 + 0.7 * avgRatio; // 0.5 .. ~1.55
+      baseLoading *= scale;
+    }
 
     // --- Apply event (overload or fault) -------------------------
 

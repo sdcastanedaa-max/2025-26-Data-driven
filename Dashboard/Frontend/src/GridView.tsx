@@ -166,10 +166,10 @@ const GridView: React.FC = () => {
             borderRadius: "999px 0 0 999px",
             border:
               flowMode === "sim"
-                ? "1px solid #f1c40f"
-                : "1px solid #444c5a",
+                ? "1px solid #42523e"
+                : "1px solid #42523e",
             background:
-              flowMode === "sim" ? "#f1c40f22" : "rgba(0,0,0,0.15)",
+              flowMode === "sim" ? "#75896b" : "rgba(0,0,0,0.15)",
             color: "#f5f5f5",
             cursor: "pointer",
             fontSize: 12,
@@ -184,11 +184,11 @@ const GridView: React.FC = () => {
             borderRadius: "0 999px 999px 0",
             border:
               flowMode === "forecast"
-                ? "1px solid #f1c40f"
+                ? "1px solid #75896b"
                 : "1px solid #444c5a",
             borderLeft: "none",
             background:
-              flowMode === "forecast" ? "#f1c40f22" : "rgba(0,0,0,0.15)",
+              flowMode === "forecast" ? "#75896b" : "rgba(0,0,0,0.15)",
             color: "#f5f5f5",
             cursor: "pointer",
             fontSize: 12,
@@ -249,9 +249,9 @@ const GridView: React.FC = () => {
                       padding: "4px 8px",
                       fontSize: 12,
                       borderRadius: 999,
-                      border: "1px solid #1f2a3d",
+                      border: "1px solid #42523e",
                       cursor: "pointer",
-                      background: active ? "#1f2838" : "#0b0f1a",
+                      background: active ? "#75896b" : "#232920",
                       color: "#f5f5f5",
                       opacity: active ? 1 : 0.6,
                     }}
@@ -267,7 +267,7 @@ const GridView: React.FC = () => {
         {/* RIGHT: table */}
         <div
           style={{
-            background: "#101826",
+            background: "#232920",
             borderRadius: 12,
             padding: 12,
             fontSize: 13,

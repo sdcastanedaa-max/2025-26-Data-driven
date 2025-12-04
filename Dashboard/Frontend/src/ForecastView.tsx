@@ -314,8 +314,8 @@ const ForecastView: React.FC = () => {
               style={{
                 padding: "2px 10px",
                 borderRadius: 4,
-                border: "1px solid #f5c242",
-                background: "#f5c242",
+                border: "1px solid #75896b",
+                background: "#75896b",
                 color: "#000",
                 cursor: "pointer",
                 fontSize: 12,
@@ -337,7 +337,7 @@ const ForecastView: React.FC = () => {
         {/* Chart */}
         <div
           style={{
-            background: "#101826",
+            background: "#232920",
             borderRadius: 12,
             padding: 12,
           }}
@@ -406,10 +406,11 @@ const ForecastView: React.FC = () => {
         {/* Metrics */}
         <div
           style={{
-            background: "#101826",
+            background: "#232920",
             borderRadius: 12,
             padding: 12,
             fontSize: 14,
+            color: "#f5f5f5",
           }}
         >
           <h3>Model performance</h3>

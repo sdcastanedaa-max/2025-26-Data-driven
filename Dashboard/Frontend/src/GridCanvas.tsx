@@ -102,7 +102,7 @@ const GridCanvas: React.FC<GridCanvasProps> = ({
 
     // background
     ctx.clearRect(0, 0, width, height);
-    ctx.fillStyle = "#050814";
+    ctx.fillStyle = "#232920";
     ctx.fillRect(0, 0, width, height);
 
     // lines
@@ -153,10 +153,10 @@ const GridCanvas: React.FC<GridCanvasProps> = ({
 
       // moving blobs along the line, using tHours
       const elapsedSeconds = tHours * 3600;
-      const cycleSeconds = 3;
+      const cycleSeconds = 25;
       const phase = (elapsedSeconds / cycleSeconds) % 1;
       const direction = f.direction >= 0 ? 1 : -1;
-      const numBlobs = 4;
+      const numBlobs = 15;
 
       for (let i = 0; i < numBlobs; i++) {
         let t = (phase + (i / numBlobs) * 0.5) % 1;

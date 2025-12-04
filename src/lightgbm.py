@@ -198,8 +198,8 @@ class LightGBM:
     def _get_sample_weights(self, df):
         hours = pd.to_datetime(df['ds']).dt.hour
         weights = np.ones(len(df))
-        weights[(hours >= 10) & (hours <= 20)] = 3.0
-        weights[(hours >= 14) & (hours <= 16)] = 5.0
+        weights[(hours >= 10) & (hours <= 20)] = 1.0
+        weights[(hours >= 14) & (hours <= 16)] = 1.0
         return weights
 
     # ------------------------------------------------------------------

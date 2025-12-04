@@ -149,7 +149,7 @@ const GridView: React.FC = () => {
 
   return (
     <div>
-      <h2 style={{ marginBottom: 8 }}>Spain Demo Grid View</h2>
+      <h2 style={{ marginBottom: 8 }}>Spain Grid View</h2>
       <p style={{ opacity: 0.8, marginBottom: 8 }}>
         Synthetic grid with wind, PV, fossil, nuclear, BESS and loads. Pulses
         move along lines in the direction of power flow; rare overloads and

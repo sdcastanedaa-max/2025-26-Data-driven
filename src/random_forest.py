@@ -29,39 +29,6 @@ class RandomForestModel:
         self.imputer = SimpleImputer(strategy="median")
 
     # ------------------------------------
-    # Weather Code 分类
-    # ------------------------------------
-    def _categorize_weather(self, w):
-        if pd.isna(w):
-            return (1, 0, 0)
-
-        w = w.lower()
-
-        if "clear" in w:
-            cloud = 0
-        elif "partly" in w:
-            cloud = 1
-        elif "cloud" in w:
-            cloud = 2
-        elif "overcast" in w:
-            cloud = 3
-        else:
-            cloud = 1
-
-        if "heavy" in w:
-            rain = 3
-        elif "rain" in w:
-            rain = 2
-        elif "drizzle" in w:
-            rain = 1
-        else:
-            rain = 0
-
-        storm = 1 if ("storm" in w or "thunder" in w) else 0
-
-        return cloud, rain, storm
-
-    # ------------------------------------
     # 时间权重函数
     # ------------------------------------
     def _get_time_weights(self, df):
@@ -72,7 +39,7 @@ class RandomForestModel:
         hours = df["ds"].dt.hour
 
         # 创建权重数组，10-20时权重为2，其他时段权重为1
-        weights = np.where((hours >= 12) & (hours <= 17), 10.0, 1.0)
+        weights = np.where((hours >= 10) & (hours <= 17), 2.0, 1.0)
 
         return weights
 
@@ -113,30 +80,30 @@ class RandomForestModel:
             df["ws_roll6"] = ws.rolling(6).std()
 
         # --------------------
-        # 风向
-        # --------------------
-        if "wind_direction_sin" in df.columns:
-            df["wind_direction_sin"] = df["wind_direction_sin"]
-            df["wind_direction_cos"] = df["wind_direction_cos"]
-
-        # --------------------
         # wind_potential_index
         # --------------------
         if "wind_potential_index" in df.columns:
             df["wind_potential_index"] = df["wind_potential_index"]
 
         # --------------------
-        # 天气分类
+        # 直接使用 cloud_cover 和 precipitation 作为特征
         # --------------------
-        if "daily__weather_code" in df.columns:
-            parsed = df["daily__weather_code"].apply(self._categorize_weather)
-            df["cloud_level"] = parsed.apply(lambda x: x[0])
-            df["rain_level"] = parsed.apply(lambda x: x[1])
-            df["storm_level"] = parsed.apply(lambda x: x[2])
+        if "cloud_cover" in df.columns:
+            # 确保 cloud_cover 在合理范围内（通常0-100）
+            df["cloud_cover"] = df["cloud_cover"].clip(0, 100)
         else:
-            df["cloud_level"] = 1
-            df["rain_level"] = 0
-            df["storm_level"] = 0
+            print("警告：数据中缺少 'cloud_cover' 列")
+            # 设置默认值
+            df["cloud_cover"] = 50  # 默认中等云量
+
+        if "precipitation" in df.columns:
+            # 确保 precipitation 为非负值
+            df["precipitation"] = df["precipitation"].clip(lower=0)
+            df["precipitation"] = df["precipitation"] * 10
+        else:
+            print("警告：数据中缺少 'precipitation' 列")
+            # 设置默认值
+            df["precipitation"] = 0  # 默认无降水
 
         # --------------------
         # Season
@@ -153,7 +120,7 @@ class RandomForestModel:
             "wind_direction_sin", "wind_direction_cos",
             "ws_lag1", "ws_lag3", "ws_lag6", "ws_roll3", "ws_roll6",
             "wind_potential_index",
-            "cloud_level", "rain_level", "storm_level",
+            "cloud_cover", "precipitation",  # 直接使用原始天气特征
             "season_factor"
         ]
 
@@ -164,6 +131,8 @@ class RandomForestModel:
     # ------------------------------------
     def fit(self, df):
         features = self._create_features(df)
+
+        self.feature_names = features.columns.tolist()
         target = df["y"]
 
         # 获取时间权重
@@ -194,3 +163,17 @@ class RandomForestModel:
             "ds": df["ds"],
             "yhat": y_pred
         })
+
+    # ------------------------------------
+    # 特征重要性
+    # ------------------------------------
+    def get_feature_importance(self):
+        if not self.is_fitted:
+            raise ValueError("模型尚未训练！")
+
+        importances = self.model.feature_importances_
+
+        return pd.DataFrame({
+            "feature": self.feature_names,
+            "importance": importances
+        }).sort_values("importance", ascending=False)

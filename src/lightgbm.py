@@ -36,7 +36,6 @@ class LightGBM:
         self.imputer = SimpleImputer(strategy='median')
         self.scaler = StandardScaler()
         self.is_fitted = False
-        self.feature_names = None
 
     # ------------------------------------------------------------------
     # 修复的特征工程（更鲁棒地处理字符串和布尔列）
@@ -52,7 +51,7 @@ class LightGBM:
         if 'ds' in df.columns:
             df['ds'] = pd.to_datetime(df['ds'])
         else:
-            raise ValueError("输入数据必须包含 'ds' 列（datetime）。")
+            raise ValueError("Must have 'ds' column(datetime)")
 
         df = df.sort_values('ds').reset_index(drop=True)
 
@@ -132,18 +131,36 @@ class LightGBM:
             if 'ws' in df.columns:
                 df['temp_ws_interaction'] = temp * df['ws']
 
-        # 8. 天气编码
-        if 'daily__weather_code' in df.columns:
-            parsed = df['daily__weather_code'].apply(self._categorize_weather)
-            df['cloud_level'] = parsed.apply(lambda x: x[0])
-            df['rain_level'] = parsed.apply(lambda x: x[1])
-            df['storm_level'] = parsed.apply(lambda x: x[2])
+        # 8. 直接使用 cloud_cover 和 precipitation 作为天气特征（替代旧的分类方法）
+        # cloud_cover: 云量百分比 (0-100)
+        if 'cloud_cover' in df.columns:
+            df['cloud_cover'] = pd.to_numeric(df['cloud_cover'], errors='coerce').clip(0, 100)
+            # 创建云量的滞后特征
+            df['cloud_cover_lag_1'] = df['cloud_cover'].shift(1)
+            df['cloud_cover_roll_mean_3'] = df['cloud_cover'].rolling(3, min_periods=1).mean()
         else:
-            df['cloud_level'] = 1
-            df['rain_level'] = 0
-            df['storm_level'] = 0
+            print("warning: no 'cloud_cover' detected")
+            # 设置默认值
+            df['cloud_cover'] = 50  # 默认中等云量
 
-        # 9. 其他文本/布尔 → 数值
+        # precipitation: 降水量 (mm/h)
+        if 'precipitation' in df.columns:
+            df['precipitation'] = pd.to_numeric(df['precipitation'], errors='coerce').clip(lower=0)
+            # 创建降水量的滞后特征
+            df['precipitation_lag_1'] = df['precipitation'].shift(1)
+            df['precipitation_roll_mean_6'] = df['precipitation'].rolling(6, min_periods=1).mean()
+            # 降水是否存在的标志
+            df['has_precipitation'] = (df['precipitation'] > 0.1).astype(int)
+        else:
+            print("warning: no 'precipitation' detected")
+            # 设置默认值
+            df['precipitation'] = 0  # 默认无降水
+            df['has_precipitation'] = 0
+
+        # 9. 创建云量和降水的交互特征
+        df['cloud_precip_interaction'] = df['cloud_cover'] * (df['precipitation'] + 1)  # 加1避免0值
+
+        # 10. 其他文本/布尔 → 数值
         for col in df.columns:
             if col in ['daily__weather_code', 'hourly__time', 'ds']:
                 continue
@@ -152,45 +169,13 @@ class LightGBM:
             elif df[col].dtype == 'object':
                 df[col] = df[col].astype('category').cat.codes
 
-        # 10. 删除无用列
-        df = df.drop(['ds', 'hourly__time', 'weekday', 'season'], axis=1, errors='ignore')
+        # 11. 删除无用列（包括旧的weather分类特征）
+        drop_columns = ['ds', 'hourly__time', 'weekday', 'season', 'daily__weather_code']
+        df = df.drop(columns=[col for col in drop_columns if col in df.columns], errors='ignore')
 
         # 只保留数值
         numeric_df = df.select_dtypes(include=[np.number]).copy()
         return numeric_df
-
-    # ------------------------------------------------------------------
-    # 天气分类
-    # ------------------------------------------------------------------
-    def _categorize_weather(self, w):
-        if pd.isna(w):
-            return (1, 0, 0)
-
-        w = str(w).lower()
-
-        if 'clear' in w:
-            cloud = 0
-        elif 'partly' in w:
-            cloud = 1
-        elif 'cloud' in w:
-            cloud = 2
-        elif 'overcast' in w:
-            cloud = 3
-        else:
-            cloud = 1
-
-        if 'heavy' in w:
-            rain = 3
-        elif 'rain' in w:
-            rain = 2
-        elif 'drizzle' in w:
-            rain = 1
-        else:
-            rain = 0
-
-        storm = 1 if ('storm' in w or 'thunder' in w) else 0
-
-        return cloud, rain, storm
 
     # ------------------------------------------------------------------
     # 样本权重（仍从原始 df 的 ds 列计算）
@@ -206,19 +191,18 @@ class LightGBM:
     # 训练
     # ------------------------------------------------------------------
     def fit(self, df, eval_df=None, early_stopping_rounds=50):
-        print('创建特征...')
+        print('Get Feature...')
         features = self._create_advanced_features(df)
+        self.feature_names = features.columns.tolist()
         target = pd.to_numeric(df['y'], errors='coerce').values
 
         sample_weights = self._get_sample_weights(df)
 
-        print('处理缺失...')
+        print('Deal Loss...')
         features = self.imputer.fit_transform(features)
 
-        print('特征标准化...')
+        print('Standerize Features ...')
         features = self.scaler.fit_transform(features)
-
-        self.feature_names = [f'f_{i}' for i in range(features.shape[1])]
 
         lgb_train = lgb.Dataset(
             features, target,
@@ -245,7 +229,7 @@ class LightGBM:
             eval_sets.append(lgb_eval)
             eval_names.append('valid')
 
-        print('开始训练 LightGBM...')
+        print('Starting LightGBM...')
         self.model = lgb.train(
             self.params,
             lgb_train,
@@ -259,7 +243,7 @@ class LightGBM:
         )
 
         self.is_fitted = True
-        print('训练完成!')
+        print('Training Finish')
         return self
 
     # ------------------------------------------------------------------
@@ -267,7 +251,7 @@ class LightGBM:
     # ------------------------------------------------------------------
     def predict(self, df):
         if not self.is_fitted:
-            raise ValueError('模型未训练')
+            raise ValueError('Model NOT Trained')
 
         features = self._create_advanced_features(df)
         features = self.imputer.transform(features)
@@ -285,7 +269,7 @@ class LightGBM:
     # ------------------------------------------------------------------
     def get_feature_importance(self):
         if self.model is None:
-            raise ValueError('模型未训练')
+            raise ValueError('Model NOT Trained')
 
         imp = pd.DataFrame({
             'feature': self.feature_names,

@@ -30,7 +30,7 @@ const App: React.FC = () => {
             }}
           >
             <h1 style={{ fontSize: 20, fontWeight: 600 }}>
-              Spain TSO Demo Dashboard
+              Demo Dashboard
             </h1>
 
             <div

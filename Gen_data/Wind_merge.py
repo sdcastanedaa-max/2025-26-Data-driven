@@ -1,14 +1,8 @@
 import pandas as pd
 
 # === 配置 ===
-files = ["open-meteo-39.96N4.02W512m.csv"]
-columns_to_keep = [
-    "hourly__time",
-    "hourly__apparent_temperature",
-    "hourly__wind_speed_100m",
-    "hourly__wind_direction_100m",
-    "daily__weather_code"
-]
+input_file = "Wind_2025.csv"#"Wind_2022_2024_raw.csv"
+output_file = "Wind_2025_new.csv"
 
 # === 定义 WMO 天气代码映射 ===
 wmo_codes = {
@@ -42,25 +36,37 @@ wmo_codes = {
     99: "Thunderstorm with heavy hail"
 }
 
-# === 读取并合并 ===
-dfs = []
-for f in files:
-    df = pd.read_csv(f)
-    # 保留指定列
-    df = df[columns_to_keep]
-    dfs.append(df)
+# === 读取原始 CSV ===
+df = pd.read_csv(input_file)
 
-# 合并所有年份
-combined = pd.concat(dfs, ignore_index=True)
+# === 统一列名为当前脚本格式（你的旧模型格式） ===
+df = df.rename(columns={
+    "time": "hourly__time",
+    "apparent_temperature": "hourly__apparent_temperature",
+    "wind_speed_100m": "hourly__wind_speed_100m",
+    "weather_code": "hourly__weather_code"
+})
 
-# 转换 weather code
-combined["daily__weather_code"] = combined["daily__weather_code"].map(wmo_codes)
+# === 选择需要的列（根据你实际数据修正） ===
+columns_to_keep = [
+    "hourly__time",
+    "hourly__apparent_temperature",
+    "hourly__wind_speed_100m",
+    "hourly__weather_code",
+    "cloud_cover",
+    "precipitation",
+]
 
-# === 保存结果 ===
-combined.to_csv("Wind_2022-2024.csv", index=False)
+df = df[columns_to_keep]
 
-print("✅ 数据合并完成！输出文件：Wind_2022-2024.csv")
+# === 翻译 weather code ===
+df["hourly__weather_code"] = df["hourly__weather_code"].map(wmo_codes)
 
-wind_df = pd.read_csv("../Gen_data/Wind_2022-2024.csv")
-wind_df['hourly__time'] = pd.to_datetime(wind_df['hourly__time'], format="%Y-%m-%dT%H:%M")
-wind_df.to_csv("Wind_2022-2024.csv", index=False)
+# === 统一时间格式 ===
+df["hourly__time"] = pd.to_datetime(df["hourly__time"], format="%Y-%m-%dT%H:%M")
+
+# === 保存 ===
+df.to_csv(output_file, index=False)
+
+print("✅ 数据处理完成！已输出：", output_file)
+

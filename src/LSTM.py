@@ -1,430 +1,247 @@
-import pandas as pd
-import numpy as np
-from sklearn.impute import SimpleImputer
-from sklearn.preprocessing import StandardScaler
 import torch
 import torch.nn as nn
-from torch.utils.data import Dataset, DataLoader
+import numpy as np
+import pandas as pd
+from sklearn.preprocessing import StandardScaler
+from sklearn.impute import SimpleImputer
 
-import warnings
-warnings.filterwarnings('ignore')
+import numpy as np
+import pandas as pd
 
-
-# =============================
-#  独立特征工程函数
-# =============================
 def create_advanced_features(df):
     df = df.copy()
 
-    # 关键修复：训练集有 y，但预测集没有；避免 y 被当作特征
-    if 'y' in df.columns:
-        df = df.drop(columns=['y'], errors='ignore')
+    # ========== 基础要求：确保有 ds ========== #
+    if "ds" not in df.columns:
+        raise ValueError("DataFrame 必须包含 'ds' 列作为时间戳。")
 
-    # 1. 时间列
-    if 'ds' not in df.columns:
-        raise ValueError("输入数据必须包含 'ds' 列（datetime）")
-    df['ds'] = pd.to_datetime(df['ds'])
-    # df = df.sort_values('ds').reset_index(drop=True)
+    df["ds"] = pd.to_datetime(df["ds"])
 
-    # 2. weekday, is_weekend, season
-    if 'weekday' in df.columns:
-        if df['weekday'].dtype == 'object':
-            df['weekday_index'] = df['weekday'].astype('category').cat.codes
+    # ========== 1. 日期时间特征 ========== #
+    df["hour"] = df["ds"].dt.hour
+    df["dayofweek"] = df["ds"].dt.dayofweek
+    df["month"] = df["ds"].dt.month
+    df["dayofyear"] = df["ds"].dt.dayofyear
+
+    # 周期编码
+    df["hour_sin"] = np.sin(2 * np.pi * df["hour"] / 24)
+    df["hour_cos"] = np.cos(2 * np.pi * df["hour"] / 24)
+
+    df["dow_sin"] = np.sin(2 * np.pi * df["dayofweek"] / 7)
+    df["dow_cos"] = np.cos(2 * np.pi * df["dayofweek"] / 7)
+
+    df["month_sin"] = np.sin(2 * np.pi * df["month"] / 12)
+    df["month_cos"] = np.cos(2 * np.pi * df["month"] / 12)
+
+    df["doy_sin"] = np.sin(2 * np.pi * df["dayofyear"] / 365)
+    df["doy_cos"] = np.cos(2 * np.pi * df["dayofyear"] / 365)
+
+    # ========== 2. 自定义季节特征 ========== #
+    def get_season(m):
+        if m in [12, 1, 2]:
+            return 0  # Winter
+        elif m in [3, 4, 5]:
+            return 1  # Spring
+        elif m in [6, 7, 8]:
+            return 2  # Summer
         else:
-            df['weekday_index'] = df['weekday']
+            return 3  # Autumn
 
-    if 'is_weekend' in df.columns:
-        if df['is_weekend'].dtype == 'bool':
-            df['is_weekend_flag'] = df['is_weekend'].astype(int)
-        else:
-            df['is_weekend_flag'] = df['is_weekend'].astype('category').cat.codes
+    df["season"] = df["month"].apply(get_season)
 
-    if 'season' in df.columns:
-        if df['season'].dtype == 'object':
-            df['season_index'] = df['season'].astype('category').cat.codes
-        else:
-            df['season_index'] = df['season']
+    # One-hot season
+    df = pd.get_dummies(df, columns=["season"], prefix="season")
 
-    # 3. 基本时间特征
-    df['hour'] = df['ds'].dt.hour
-    df['month'] = df['ds'].dt.month
-    df['day_of_year'] = df['ds'].dt.dayofyear
+    # ========== 3. 风向特征（sin/cos） ========== #
+    if "wind_direction" in df.columns:
+        df["wind_dir_sin"] = np.sin(np.deg2rad(df["wind_direction"]))
+        df["wind_dir_cos"] = np.cos(np.deg2rad(df["wind_direction"]))
+    else:
+        df["wind_dir_sin"] = 0
+        df["wind_dir_cos"] = 0
 
-    df['hour_sin'] = np.sin(2 * np.pi * df['hour'] / 24)
-    df['hour_cos'] = np.cos(2 * np.pi * df['hour'] / 24)
-    df['day_sin'] = np.sin(2 * np.pi * df['day_of_year'] / 365)
-    df['day_cos'] = np.cos(2 * np.pi * df['day_of_year'] / 365)
+    # ========== 4. rolling 平滑（不限于 wind_speed） ========== #
+    rolling_cols = []
+    if "wind_speed" in df.columns:
+        rolling_cols.append("wind_speed")
+    if "wind_gust" in df.columns:
+        rolling_cols.append("wind_gust")
+    if "temperature" in df.columns:
+        rolling_cols.append("temperature")
 
-    # 4. 风向
-    if 'hourly__wind_direction_100m' in df.columns:
-        angles = pd.to_numeric(df['hourly__wind_direction_100m'], errors='coerce')
-        radians = np.deg2rad(angles.fillna(0.0))
-        df['wind_direction_sin'] = np.sin(radians)
-        df['wind_direction_cos'] = np.cos(radians)
+    for col in rolling_cols:
+        df[f"{col}_roll3"] = df[col].rolling(3, min_periods=1).mean()
+        df[f"{col}_roll6"] = df[col].rolling(6, min_periods=1).mean()
+        df[f"{col}_roll12"] = df[col].rolling(12, min_periods=1).mean()
 
-    # 5. 风速
-    if 'hourly__wind_speed_100m' in df.columns:
-        ws = pd.to_numeric(df['hourly__wind_speed_100m'], errors='coerce')
-        df['ws'] = ws
-        df['ws_squared'] = ws**2
-        df['ws_cubed'] = ws**3
-        df['ws_log'] = np.log1p(ws.clip(lower=0))
+    # ========== 5. lag 特征（避免泄漏） ========== #
+    lag_features = []
+    if "y" in df.columns:
+        lag_features.append("y")
+    if "wind_speed" in df.columns:
+        lag_features.append("wind_speed")
 
-        for lag in [1, 2, 3, 6]:
-            df[f'ws_lag_{lag}'] = ws.shift(lag)
+    for col in lag_features:
+        df[f"{col}_lag1"] = df[col].shift(1)
+        df[f"{col}_lag24"] = df[col].shift(24)
+        df[f"{col}_lag48"] = df[col].shift(48)
 
-        for window in [3, 6]:
-            df[f'ws_roll_mean_{window}'] = ws.rolling(window, min_periods=1).mean()
-            df[f'ws_roll_std_{window}'] = ws.rolling(window, min_periods=1).std()
-
-        df['ws_diff_1'] = ws.diff(1)
-        df['ws_diff_3'] = ws.diff(3)
-
-    # 6. 风向滞后
-    if 'wind_direction_sin' in df.columns:
-        for lag in [1, 3]:
-            df[f'wind_sin_lag_{lag}'] = df['wind_direction_sin'].shift(lag)
-            df[f'wind_cos_lag_{lag}'] = df['wind_direction_cos'].shift(lag)
-
-    # 7. 温度
-    if 'hourly__apparent_temperature' in df.columns:
-        temp = pd.to_numeric(df['hourly__apparent_temperature'], errors='coerce')
-        df['temp'] = temp
-        df['temp_lag_1'] = temp.shift(1)
-        df['temp_roll_mean_3'] = temp.rolling(3, min_periods=1).mean()
-        if 'ws' in df.columns:
-            df['temp_ws_interaction'] = temp * df['ws']
-
-    # 8. 删除无关列
-    df = df.drop(['ds', 'hourly__time', 'weekday', 'season'], axis=1, errors='ignore')
-
-    # 9. 只保留数值
-    df = df.select_dtypes(include=[np.number])
+    # ========== 6. 缺失值处理 ========== #
+    df = df.fillna(method="ffill").fillna(method="bfill")
+    # 删除无关列
+    df = df.drop(['hourly__time', 'weekday', 'season'], axis=1, errors='ignore')
 
     return df
 
 
-# =============================
-# 内部 LSTM 模型
-# =============================
 class LSTMRegressor(nn.Module):
     def __init__(self, input_dim, hidden_dim=128, num_layers=2, dropout=0.2):
         super().__init__()
         self.lstm = nn.LSTM(
             input_dim,
             hidden_dim,
-            num_layers=num_layers,
-            dropout=dropout,
-            batch_first=True
+            num_layers,
+            batch_first=True,
+            dropout=dropout
         )
         self.fc = nn.Linear(hidden_dim, 1)
 
     def forward(self, x):
         out, _ = self.lstm(x)
-        out = out[:, -1, :]      # 取序列最后一步
-        out = self.fc(out)
+        out = self.fc(out[:, -1, :])
         return out
 
 
-# =============================
-# 时间序列 Dataset
-# =============================
-class SeqDataset(Dataset):
-    def __init__(self, X, y, seq_len=24):
-        self.X = X
-        self.y = y
-        self.seq_len = seq_len
-
-    def __len__(self):
-        return len(self.X) - self.seq_len
-
-    def __getitem__(self, idx):
-        x_seq = self.X[idx: idx + self.seq_len]
-        y_val = self.y[idx + self.seq_len]
-        return x_seq, y_val
-
-
-# =============================
-# 主模型（保持接口不变）
-# =============================
 class LSTM:
     """
-    PyTorch LSTM 版本（接口与原 LightGBM 完全兼容）
+    干净版：不做特征工程
+    你需要在外部先做好 create_advanced_features()
     """
 
-    def __init__(self, seq_len=24, hidden_dim=128, num_layers=2, dropout=0.2, **kwargs):
+    def __init__(self, seq_len=24, hidden_dim=128, num_layers=2, dropout=0.2, device=None):
         self.seq_len = seq_len
+        self.device = device or ("cuda" if torch.cuda.is_available() else "cpu")
+
+        # 数据处理器
+        self.imputer = SimpleImputer(strategy="mean")
+        self.scaler_x = StandardScaler()
+        self.scaler_y = StandardScaler()
+
+        # 保存训练时的特征列顺序
+        self.feature_cols = None
+
+        # Pytorch 模型
+        self.model = None
         self.hidden_dim = hidden_dim
         self.num_layers = num_layers
         self.dropout = dropout
 
-        self.model = None
-        self.device = torch.device('cuda' if torch.cuda.is_available() else 'cpu')
+    # ---------------------- Data Utils ---------------------- #
 
-        self.imputer = SimpleImputer(strategy='median')
-        self.scaler = StandardScaler()
+    def _create_sequences(self, X, y):
+        seq_len = self.seq_len
+        X_seq, y_seq = [], []
 
-        self.is_fitted = False
-        self.feature_names = None
+        for i in range(len(X) - seq_len):
+            X_seq.append(X[i:i+seq_len])
+            y_seq.append(y[i+seq_len])
 
-        self.y_scaler = StandardScaler()
+        return np.array(X_seq), np.array(y_seq)
 
-        df = df.copy()
+    # ---------------------- Fit ---------------------- #
 
-        # 关键修复：训练集有 y，但预测集没有；避免 y 被当作特征
-        if 'y' in df.columns:
-            df = df.drop(columns=['y'], errors='ignore')
+    def fit(self, df, target_col="y", epochs=10, lr=1e-3, batch=128):
 
-        # 1. 统一 datetime
-        if 'ds' in df.columns:
-            df['ds'] = pd.to_datetime(df['ds'])
-        else:
-            raise ValueError("输入数据必须包含 'ds' 列（datetime）。")
+        # 1. 记录特征列（除 y 以外）
+        self.feature_cols = [c for c in df.columns if c != target_col]
 
-        df = df.sort_values('ds').reset_index(drop=True)
+        # 2. 分离 X, y
+        X = df[self.feature_cols].values
+        y = df[target_col].values.reshape(-1, 1)
 
-        # 2. 处理常见字符串/布尔列： weekday, is_weekend, season
-        if 'weekday' in df.columns:
-            if df['weekday'].dtype == 'object' or pd.api.types.is_categorical_dtype(df['weekday']):
-                df['weekday_index'] = df['weekday'].astype('category').cat.codes
-            else:
-                df['weekday_index'] = df['weekday']
+        # Remove datetime columns
+        datetime_cols = X.select_dtypes(include=['datetime64[ns]', 'datetime64[ns, UTC]']).columns
+        if len(datetime_cols) > 0:
+            print(f"[Warning] Dropping datetime columns: {list(datetime_cols)}")
+            X = X.drop(columns=datetime_cols)
 
-        if 'is_weekend' in df.columns:
-            if df['is_weekend'].dtype == 'bool':
-                df['is_weekend_flag'] = df['is_weekend'].astype(int)
-            elif df['is_weekend'].dtype == 'object':
-                df['is_weekend_flag'] = df['is_weekend'].map({
-                    'True': 1, 'true': 1, 'TRUE': 1,
-                    'False': 0, 'false': 0, 'FALSE': 0
-                }).fillna(df['is_weekend'].astype('category').cat.codes)
-            else:
-                df['is_weekend_flag'] = df['is_weekend'].astype(int)
-
-        if 'season' in df.columns:
-            if df['season'].dtype == 'object' or pd.api.types.is_categorical_dtype(df['season']):
-                df['season_index'] = df['season'].astype('category').cat.codes
-            else:
-                df['season_index'] = df['season']
-
-        # 3. 基本时间特征
-        df['hour'] = df['ds'].dt.hour
-        df['month'] = df['ds'].dt.month
-        df['day_of_year'] = df['ds'].dt.dayofyear
-
-        df['hour_sin'] = np.sin(2 * np.pi * df['hour'] / 24)
-        df['hour_cos'] = np.cos(2 * np.pi * df['hour'] / 24)
-        df['day_sin'] = np.sin(2 * np.pi * df['day_of_year'] / 365)
-        df['day_cos'] = np.cos(2 * np.pi * df['day_of_year'] / 365)
-
-        # 4. 风向
-        if 'wind_direction_sin' not in df.columns or 'wind_direction_cos' not in df.columns:
-            if 'hourly__wind_direction_100m' in df.columns:
-                angles = pd.to_numeric(df['hourly__wind_direction_100m'], errors='coerce')
-                radians = np.deg2rad(angles.fillna(0.0))
-                df['wind_direction_sin'] = np.sin(radians)
-                df['wind_direction_cos'] = np.cos(radians)
-
-        # 5. 风速
-        if 'hourly__wind_speed_100m' in df.columns:
-            ws = pd.to_numeric(df['hourly__wind_speed_100m'], errors='coerce')
-            df['ws'] = ws
-            df['ws_squared'] = ws ** 2
-            df['ws_cubed'] = ws ** 3
-            df['ws_log'] = np.log1p(ws.clip(lower=0))
-
-            for lag in [1, 2, 3, 6]:
-                df[f'ws_lag_{lag}'] = ws.shift(lag)
-
-            for window in [3, 6]:
-                df[f'ws_roll_mean_{window}'] = ws.rolling(window, min_periods=1).mean()
-                df[f'ws_roll_std_{window}'] = ws.rolling(window, min_periods=1).std()
-
-            df['ws_diff_1'] = ws.diff(1)
-            df['ws_diff_3'] = ws.diff(3)
-
-        # 6. 风向滞后
-        for lag in [1, 3]:
-            if 'wind_direction_sin' in df.columns:
-                df[f'wind_sin_lag_{lag}'] = pd.to_numeric(df['wind_direction_sin'], errors='coerce').shift(lag)
-            if 'wind_direction_cos' in df.columns:
-                df[f'wind_cos_lag_{lag}'] = pd.to_numeric(df['wind_direction_cos'], errors='coerce').shift(lag)
-
-        # 7. 温度
-        if 'hourly__apparent_temperature' in df.columns:
-            temp = pd.to_numeric(df['hourly__apparent_temperature'], errors='coerce')
-            df['temp'] = temp
-            df['temp_lag_1'] = temp.shift(1)
-            df['temp_roll_mean_3'] = temp.rolling(3, min_periods=1).mean()
-            if 'ws' in df.columns:
-                df['temp_ws_interaction'] = temp * df['ws']
-
-        # 8. 天气编码
-        if 'daily__weather_code' in df.columns:
-            parsed = df['daily__weather_code'].apply(self._categorize_weather)
-            df['cloud_level'] = parsed.apply(lambda x: x[0])
-            df['rain_level'] = parsed.apply(lambda x: x[1])
-            df['storm_level'] = parsed.apply(lambda x: x[2])
-        else:
-            df['cloud_level'] = 1
-            df['rain_level'] = 0
-            df['storm_level'] = 0
-
-        # 9. 其他文本/布尔 → 数值
-        for col in df.columns:
-            if col in ['daily__weather_code', 'hourly__time', 'ds']:
-                continue
-            if df[col].dtype == 'bool':
-                df[col] = df[col].astype(int)
-            elif df[col].dtype == 'object':
-                df[col] = df[col].astype('category').cat.codes
-
-        # 10. 删除无用列
-        df = df.drop(['ds', 'hourly__time', 'weekday', 'season'], axis=1, errors='ignore')
-
-        # 只保留数值
-        numeric_df = df.select_dtypes(include=[np.number]).copy()
-        return numeric_df
-    # ------------------------------------------------------------------
-    # 天气分类
-    # ------------------------------------------------------------------
-    def _categorize_weather(self, w):
-        if pd.isna(w):
-            return (1, 0, 0)
-
-        w = str(w).lower()
-
-        if 'clear' in w:
-            cloud = 0
-        elif 'partly' in w:
-            cloud = 1
-        elif 'cloud' in w:
-            cloud = 2
-        elif 'overcast' in w:
-            cloud = 3
-        else:
-            cloud = 1
-
-        if 'heavy' in w:
-            rain = 3
-        elif 'rain' in w:
-            rain = 2
-        elif 'drizzle' in w:
-            rain = 1
-        else:
-            rain = 0
-
-        storm = 1 if ('storm' in w or 'thunder' in w) else 0
-
-        return cloud, rain, storm
-
-    def _get_sample_weights(self, df):
-        hours = pd.to_datetime(df['ds']).dt.hour
-        weights = np.ones(len(df))
-        weights[(hours >= 10) & (hours <= 20)] = 1.0
-        weights[(hours >= 14) & (hours <= 16)] = 1.0
-        return weights
-
-    # -----------------------------------------
-    # 训练
-    # -----------------------------------------
-    def fit(self, df, eval_df=None, epochs=5, batch_size=64, lr=1e-3):
-        print("创建特征...")
-        X = df.drop(columns=['y'], errors='ignore').values.astype(np.float32)
-        y = self.y_scaler.fit_transform(y.reshape(-1,1)).flatten().astype(np.float32)
-
-        print("缺失值处理...")
+        # 3. Impute + scale
         X = self.imputer.fit_transform(X)
-        X = self.scaler.fit_transform(X)
+        X = self.scaler_x.fit_transform(X)
+        y = self.scaler_y.fit_transform(y)
 
-        X = X.astype(np.float32)
+        # 4. 构建序列
+        X_seq, y_seq = self._create_sequences(X, y)
 
-        # 构造 DataLoader
-        train_ds = SeqDataset(X, y, seq_len=self.seq_len)
-        train_loader = DataLoader(train_ds, batch_size=batch_size, shuffle=True)
+        X_tensor = torch.tensor(X_seq, dtype=torch.float32).to(self.device)
+        y_tensor = torch.tensor(y_seq, dtype=torch.float32).to(self.device)
 
-        input_dim = X.shape[1]
-        print("初始化 LSTM...")
+        # 5. 初始化模型
         self.model = LSTMRegressor(
-            input_dim=input_dim,
+            input_dim=X.shape[1],
             hidden_dim=self.hidden_dim,
             num_layers=self.num_layers,
             dropout=self.dropout
         ).to(self.device)
 
+        # 6. 训练循环
         optimizer = torch.optim.Adam(self.model.parameters(), lr=lr)
-        criterion = nn.L1Loss()
+        loss_fn = nn.MSELoss()
 
-        print("开始训练 LSTM...")
         for ep in range(epochs):
-            epoch_loss = 0
-            for xb, yb in train_loader:
-                xb = xb.to(self.device)
-                yb = yb.to(self.device).unsqueeze(1)
+            self.model.train()
+            idx = np.random.permutation(len(X_tensor))
 
-                pred = self.model(xb)
-                loss = criterion(pred, yb)
+            for i in range(0, len(idx), batch):
+                batch_idx = idx[i:i+batch]
+                xb = X_tensor[batch_idx]
+                yb = y_tensor[batch_idx]
 
                 optimizer.zero_grad()
+                pred = self.model(xb)
+                loss = loss_fn(pred, yb)
                 loss.backward()
+                torch.nn.utils.clip_grad_norm_(self.model.parameters(), 3.0)
                 optimizer.step()
 
-                epoch_loss += loss.item()
+            print(f"Epoch {ep+1}/{epochs} - Loss={loss.item():.6f}")
 
-            print(f"Epoch {ep+1}/{epochs} - Loss: {epoch_loss:.4f}")
+    # ---------------------- Predict ---------------------- #
 
-        self.is_fitted = True
-        print("训练完成！")
-        return self
+    def predict(self, df_future, target_col="y"):
+        """
+        注意：df_future 必须保留 ds 列，但不能包含 y。
+        """
 
-    # -----------------------------------------
-    # 预测（逐步预测，不泄漏未来）
-    # -----------------------------------------
+        if "ds" not in df_future.columns:
+            raise ValueError("predict 时必须包含 ds 列以输出 forecast DataFrame。")
 
-    def predict(self, df):
-        if not self.is_fitted:
-            raise ValueError("模型未训练")
+        # 必须使用训练时的特征列顺序
+        X = df_future[self.feature_cols].values
 
-        features = df.values.astype(np.float32)
-        features = self.imputer.transform(features)
-        features = self.scaler.transform(features)
-        features = features.astype(np.float32)
+        # 相同的 impute + scale
+        X = self.imputer.transform(X)
+        X = self.scaler_x.transform(X)
+
+        # 构建输入序列（只适用于单步预测）
+        X_tensor = torch.tensor(X, dtype=torch.float32).to(self.device)
 
         preds = []
-        seq = []
 
-        # 滚动预测
-        for t in range(len(features)):
-            seq.append(features[t])
-            if len(seq) < self.seq_len:
-                preds.append(np.nan)
-                continue
+        self.model.eval()
+        with torch.no_grad():
+            for i in range(self.seq_len, len(X_tensor)):
+                seq = X_tensor[i-self.seq_len:i].unsqueeze(0)   # shape (1, seq_len, n_features)
+                y_pred = self.model(seq)
+                y_pred = y_pred.cpu().numpy()
+                y_pred = self.scaler_y.inverse_transform(y_pred)
+                preds.append(y_pred[0][0])
 
-            x = np.array(seq[-self.seq_len:])[None, :, :]
-            x = torch.tensor(x, dtype=torch.float32).to(self.device)
-
-            with torch.no_grad():
-                yhat = self.model(x).cpu().numpy().item()
-                yhat = self.y_scaler.inverse_transform([[yhat]])[0,0]
-
-            preds.append(yhat)
+        # 对齐 ds（前 seq_len 无预测）
+        ds_out = df_future["ds"].iloc[self.seq_len:].reset_index(drop=True)
 
         return pd.DataFrame({
-            'ds': df['ds'],
-            'yhat': preds
+            "ds": ds_out,
+            "yhat": preds
         })
 
-    # -----------------------------------------
-    # LSTM 没有原生特征重要性 → 用权重范数代替
-    # -----------------------------------------
-    def get_feature_importance(self):
-        if self.model is None:
-            raise ValueError("模型未训练")
-
-        weight = self.model.lstm.weight_ih_l0.detach().cpu().numpy()
-        importance = np.mean(np.abs(weight), axis=0)
-
-        return pd.DataFrame({
-            "feature": [f"f_{i}" for i in range(len(importance))],
-            "importance": importance
-        }).sort_values("importance", ascending=False)

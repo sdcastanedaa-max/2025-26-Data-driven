@@ -445,8 +445,8 @@ const ForecastView: React.FC = () => {
               marginTop: 4,
               padding: "4px 6px",
               borderRadius: 4,
-              border: "1px solid #2c3e50",
-              background: "#050814",
+              border: "1px solid #42523e",
+              background: "#232920",
               color: "#f5f5f5",
             }}
           />
@@ -461,7 +461,7 @@ const ForecastView: React.FC = () => {
               type="text"
               value={dayStr}
               onChange={(e) => setDayStr(e.target.value)}
-              style={{ width: 32 }}
+              style={{ width: 32, border: "1px solid #42523e" }}
               maxLength={2}
               placeholder="DD"
             />
@@ -469,7 +469,7 @@ const ForecastView: React.FC = () => {
               type="text"
               value={monthStr}
               onChange={(e) => setMonthStr(e.target.value)}
-              style={{ width: 32 }}
+              style={{ width: 32, border: "1px solid #42523e" }}
               maxLength={2}
               placeholder="MM"
             />
@@ -477,7 +477,7 @@ const ForecastView: React.FC = () => {
               type="text"
               value={yearStr}
               onChange={(e) => setYearStr(e.target.value)}
-              style={{ width: 52 }}
+              style={{ width: 52, border: "1px solid #42523e" }}
               maxLength={4}
               placeholder="YYYY"
             />

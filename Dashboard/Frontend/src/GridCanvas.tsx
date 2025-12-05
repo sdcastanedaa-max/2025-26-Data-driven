@@ -1,4 +1,4 @@
-// frontend/src/GridCanvas.tsx
+// Frontend/src/GridCanvas.tsx
 import React, { useEffect, useRef } from "react";
 import type { GridNode, NodeType } from "./gridData";
 import { NODES, LINES } from "./gridData";
@@ -102,7 +102,7 @@ const GridCanvas: React.FC<GridCanvasProps> = ({
 
     // background
     ctx.clearRect(0, 0, width, height);
-    ctx.fillStyle = "#232920";
+    ctx.fillStyle = "#161a14";
     ctx.fillRect(0, 0, width, height);
 
     // lines

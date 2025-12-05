@@ -12,7 +12,7 @@ export interface LineFlow {
 }
 
 // -----------------------------------------------------------------------------
-// NEW: forecast totals + allocation helper
+// FORECAST TOTALS + ALLOCATION
 // -----------------------------------------------------------------------------
 
 export type ForecastTotals = {
@@ -79,7 +79,7 @@ export function allocateForecastToNodes(
       if (p < 0) p = 0;
       if (p > cap) p = cap;
 
-      // += just in case a node is "hybrid" in your toy world
+      // "+=" just in case some node is hybrid PV+wind in the toy world
       injections[n.id] += p;
     });
   }
@@ -88,34 +88,64 @@ export function allocateForecastToNodes(
 }
 
 // -----------------------------------------------------------------------------
-// NODE SIGNS
-//   +1 : pure generators (wind, pv, fossil, nuclear)
-//   -1 : pure loads (load_res, load_ind)
-//    0 : substations and BESS (can do both, neutral hubs)
+// STEP A: NODE-LEVEL INJECTIONS (SIM MODE)
+// -----------------------------------------------------------------------------
+//
+// Positive = generation (MW), negative = load (MW).
+// Values are clamped to ±capacity_MW so assets can't violate their rating.
 // -----------------------------------------------------------------------------
 
-const nodeSign = (type: GridNode["type"]): number => {
-  if (["wind", "pv", "fossil", "nuclear"].includes(type)) return 1;
-  if (["load_res", "load_ind"].includes(type)) return -1;
-  // substations + bess are neutral
-  return 0;
-};
+export function computeSimInjections(tHours: number): Record<string, number> {
+  const hour = tHours % 24;
+  const inj: Record<string, number> = {};
 
-// small deterministic hash per-line for diversity
-function hashString(str: string): number {
-  let h = 0;
-  for (let i = 0; i < str.length; i++) {
-    h = (h * 31 + str.charCodeAt(i)) | 0;
+  for (const n of NODES) {
+    let p = 0;
+    const cap = n.capacity_MW ?? 0;
+
+    if (n.type === "pv") {
+      // simple PV bell curve: zero at night, peak at midday
+      const pvShape = Math.max(
+        0,
+        Math.sin(((hour - 6) / 24) * 2 * Math.PI)
+      );
+      p = pvShape * cap; // generation ≥ 0
+    } else if (n.type === "wind") {
+      // wind: gently varying around ~60–80% of capacity
+      const w =
+        0.6 +
+        0.2 * Math.sin((2 * Math.PI * tHours) / 24) +
+        0.1 * Math.sin((2 * Math.PI * tHours) / 6);
+      p = Math.max(0, w) * cap;
+    } else if (n.type === "fossil" || n.type === "nuclear") {
+      // baseload-ish around 70–90% of capacity
+      const base = 0.75 + 0.1 * Math.sin((2 * Math.PI * tHours) / 24);
+      p = base * cap;
+    } else if (n.type === "load_res" || n.type === "load_ind") {
+      // loads: negative injections with daily pattern
+      const d =
+        0.7 +
+        0.15 * Math.sin((2 * Math.PI * hour) / 24) +
+        0.05 * Math.sin((2 * Math.PI * hour) / 2);
+      p = -d * cap; // negative = consumption
+    } else {
+      // substations / bess: neutral by default in this toy
+      p = 0;
+    }
+
+    // hard clamp so nothing exceeds nameplate rating
+    if (cap > 0) {
+      p = Math.min(Math.max(p, -cap), cap);
+    }
+
+    inj[n.id] = p;
   }
-  return h;
+
+  return inj;
 }
 
 // -----------------------------------------------------------------------------
 // EVENT SYSTEM: overloads + faults
-//   - At most 1 active event at a time
-//   - "overload": line goes red briefly, then yellow, then back to normal
-//   - "fault"   : line opens (0 MW) for a very short time, then limited yellow,
-//                 then back to normal
 // -----------------------------------------------------------------------------
 
 interface LineEvent {
@@ -169,12 +199,11 @@ function maybeUpdateEvent(tHours: number, lines: GridLine[]) {
 }
 
 // -----------------------------------------------------------------------------
-// MAIN SIMULATION
+// STEP B: MAIN SIMULATION – FLOWS FROM NODE INJECTIONS
 // -----------------------------------------------------------------------------
 //
-// Extended signature:
-//   simulateLineFlows(tHours)                      // old behavior
-//   simulateLineFlows(tHours, { useForecast, forecastTotals }) // new option
+// simulateLineFlows(tHours)                         -> sim mode
+// simulateLineFlows(tHours, { useForecast, forecastTotals }) -> RES-driven
 // -----------------------------------------------------------------------------
 
 export function simulateLineFlows(
@@ -185,115 +214,41 @@ export function simulateLineFlows(
   }
 ): Record<string, LineFlow> {
   const nodeById: Record<string, GridNode> = {};
-  NODES.forEach((n) => (nodeById[n.id] = n));
+  NODES.forEach((n) => {
+    nodeById[n.id] = n;
+  });
 
   const useForecast = opts?.useForecast ?? false;
   const forecastTotals = opts?.forecastTotals;
 
-  // capacity-weighted node injections for PV/Wind if forecast mode is on
-  const forecastNodeInjection: Record<string, number> | null =
+  // 1) Per-node injections: either forecast-based or simulated
+  const injections: Record<string, number> =
     useForecast && forecastTotals
       ? allocateForecastToNodes(forecastTotals)
-      : null;
+      : computeSimInjections(tHours);
 
+  // 2) Update rare events (overloads/faults)
   maybeUpdateEvent(tHours, LINES);
 
   const flows: Record<string, LineFlow> = {};
-  const hour = tHours % 24.0;
 
+  // 3) Build line flows from injection differences
   for (const line of LINES) {
     const nFrom = nodeById[line.from];
     const nTo = nodeById[line.to];
 
-    const signFrom = nodeSign(nFrom.type);
-    const signTo = nodeSign(nTo.type);
+    const pFrom = injections[nFrom.id] ?? 0;
+    const pTo = injections[nTo.id] ?? 0;
 
-    // GENERATION → LOAD direction preference
-    const direction =
-      Math.sign(signFrom - signTo) !== 0
-        ? Math.sign(signFrom - signTo)
-        : 1; // default
+    // raw flow proportional to injection imbalance
+    let rawFlow = (pFrom - pTo) * 0.5; // 0.5 is a tuning knob
 
-    // --- Base "healthy" loading profile (steady, mostly green) ---
+    // clamp to line rating
+    rawFlow = Math.min(Math.max(rawFlow, -line.rating_MW), line.rating_MW);
 
-    const baseScale =
-      (Math.abs(nFrom.capacity_MW) + Math.abs(nTo.capacity_MW)) / 2.0;
-
-    // PV: daytime bump
-    const pvFactor = Math.max(
-      0,
-      Math.sin(((hour - 6.0) / 24.0) * 2.0 * Math.PI),
-    );
-
-    // technology-specific variability
-    let techFactor: number;
-    if (nFrom.type === "pv" || nTo.type === "pv") {
-      techFactor = 0.3 + 0.7 * pvFactor; // PV low at night, high mid-day
-    } else if (nFrom.type === "wind" || nTo.type === "wind") {
-      techFactor =
-        0.6 +
-        0.2 * Math.sin((2.0 * Math.PI * tHours) / 24.0) +
-        0.1 * Math.sin((2.0 * Math.PI * tHours) / 6.0);
-    } else if (
-      nFrom.type === "fossil" ||
-      nTo.type === "fossil" ||
-      nFrom.type === "nuclear" ||
-      nTo.type === "nuclear"
-    ) {
-      techFactor =
-        0.8 +
-        0.1 * Math.sin((2.0 * Math.PI * tHours) / 24.0); // baseload-ish
-    } else {
-      techFactor =
-        0.5 + 0.1 * Math.sin((2.0 * Math.PI * tHours) / 12.0);
-    }
-
-    // line-specific factor
-    const hash = Math.abs(hashString(line.id)) % 1000;
-    const lineFactor = 0.9 + 0.2 * (hash / 1000.0); // ~0.9..1.1
-
-    // small wiggle just for liveliness
-    const wiggle = 1.0 + 0.03 * Math.sin(2.0 * Math.PI * tHours);
-
-    // choose magnitude so base loading typically 20–70% of rating
-    const baseMagnitude =
-      0.18 * baseScale * techFactor * lineFactor * wiggle;
-
-    let baseFlow = direction * baseMagnitude;
-    let baseLoading = Math.abs(baseFlow) / line.rating_MW;
-
-    // clamp baseLoading to avoid natural permanent yellow/red
-    baseLoading = Math.min(baseLoading, 0.85);
-
-    // --- NEW: adjust loading based on forecast injections on PV/Wind ----
-    if (forecastNodeInjection) {
-      // For each endpoint, compute how "full" PV/Wind plants are vs capacity
-      const ratioForNode = (n: GridNode): number => {
-        if (n.type !== "pv" && n.type !== "wind") {
-          return 1.0; // non-RES node: neutral
-        }
-        const cap = n.capacity_MW || 0;
-        if (cap <= 0) return 1.0;
-
-        const inj = forecastNodeInjection[n.id] ?? 0;
-        const r = inj / cap;
-        // clamp to 0..1.5 to avoid crazy extremes
-        return Math.min(Math.max(r, 0), 1.5);
-      };
-
-      const rFrom = ratioForNode(nFrom);
-      const rTo = ratioForNode(nTo);
-      const avgRatio = (rFrom + rTo) / 2.0;
-
-      // scale loading based on avgRatio:
-      //  - ~0 generation => ~0.5x of normal
-      //  - full generation => ~1.2x of normal (but still capped later)
-      const scale = 0.5 + 0.7 * avgRatio; // 0.5 .. ~1.55
-      baseLoading *= scale;
-    }
+    let loading = Math.abs(rawFlow) / line.rating_MW;
 
     // --- Apply event (overload or fault) -------------------------
-
     let eventColorOverride: FlowStatus | null = null;
     let forceZero = false;
 
@@ -302,55 +257,42 @@ export function simulateLineFlows(
       const dur = Math.max(ev.endTHours - ev.startTHours, 1e-6);
       const prog = Math.min(
         Math.max((tHours - ev.startTHours) / dur, 0),
-        1,
-      ); // 0..1 within event window
+        1
+      ); // 0..1
 
       if (ev.kind === "overload") {
         // overload: start strong red, fade through yellow back to base
-        const boost = 0.6 * (1 - prog); // strong at start, 0 at end
-        baseLoading *= 1 + boost;
-
-        if (prog < 0.4) eventColorOverride = "red";
+        const boost = 0.4 * (1 - prog); // strong at start, 0 at end
+        loading = loading * (1 + boost);
+        if (prog < 0.3) eventColorOverride = "red";
         else if (prog < 0.8) eventColorOverride = "yellow";
-        // last 20%: back to normal color from loading
       } else {
-        // fault: open line briefly, then limited yellow, then normal
+        // fault: open line briefly, then constrained, then back to normal
         if (prog < 0.3) {
-          // just tripped: open
           forceZero = true;
           eventColorOverride = "red";
         } else if (prog < 0.7) {
-          // reclosed but constrained
-          baseLoading = Math.max(0.3, baseLoading * 0.4);
+          loading = Math.max(0.3, loading * 0.5);
           eventColorOverride = "yellow";
-        } else {
-          // final 30%: back to normal
         }
       }
     }
 
-    // --- Final loading, enforcing min >= 15% except during open fault ----
+    // final loading cap
+    let finalLoading = forceZero ? 0 : loading;
+    finalLoading = Math.min(finalLoading, 1.2); // safety cap
 
-    let loading: number;
-    if (forceZero) {
-      loading = 0;
-    } else {
-      loading = baseLoading;
-      loading = Math.min(loading, 1.2); // safety cap
-      // keep every *healthy* line at least 15% loaded
-      loading = Math.max(0.15, loading);
-    }
-
-    const flow_MW = direction * loading * line.rating_MW;
+    const flow_MW = forceZero
+      ? 0
+      : Math.sign(rawFlow || 1) * finalLoading * line.rating_MW;
 
     // --- Color assignment ---------------------------------------
-
     let color: FlowStatus;
     if (eventColorOverride) {
       color = eventColorOverride;
-    } else if (loading > 1.0) {
+    } else if (finalLoading > 1.0) {
       color = "red";
-    } else if (loading > 0.85) {
+    } else if (finalLoading > 0.85) {
       color = "yellow";
     } else {
       color = "green";
@@ -358,11 +300,12 @@ export function simulateLineFlows(
 
     flows[line.id] = {
       flow_MW,
-      loading,
+      loading: finalLoading,
       color,
-      direction,
+      direction: Math.sign(flow_MW || 1),
     };
   }
 
   return flows;
 }
+

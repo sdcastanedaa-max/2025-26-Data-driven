@@ -323,7 +323,7 @@ export const NODES: GridNode[] = [
   { id: "L_W2_S2", from: "W2", to: "S2", rating_MW: 450, level: "T" },
   { id: "L_W3_S4", from: "W3", to: "S4", rating_MW: 400, level: "T" },
   { id: "L_W4_S4", from: "W4", to: "S4", rating_MW: 400, level: "T" },
-  { id: "L_W5_S3", from: "W5", to: "S3", rating_MW: 450, level: "T" },
+  { id: "L_W5_S3", from: "W5", to: "S3", rating_MW: 800, level: "T" },
 
   // --- PV → regional substations --------------------------------
   { id: "L_P1_S6", from: "P1", to: "S6", rating_MW: 250, level: "D" },

@@ -1,10 +1,11 @@
-// Frontend/src/GridView.tsx
+// frontend/src/GridView.tsx
 import { useSimTime } from "./simTime";
-import React, { useMemo, useState } from "react";
+import React, { useEffect, useMemo, useState } from "react";
 import GridCanvas from "./GridCanvas";
 import { simulateLineFlows } from "./simulation";
 import { LINES, NODES } from "./gridData";
 import type { GridNode, NodeType } from "./gridData";
+import { useForecastWindow } from "./ForecastWindowContext";
 
 interface TooltipInfo {
   node: GridNode;
@@ -31,8 +32,18 @@ const LEGEND_ITEMS: { key: NodeType; label: string }[] = [
   { key: "substation", label: "Substation" },
 ];
 
+// same backend root as ForecastView
+const BACKEND_BASE = "http://127.0.0.1:8000/Backend";
+
+type ForecastPoint = {
+  tMs: number;        // timestamp in ms
+  pvForecast: number; // MW
+  windForecast: number; // MW
+};
+
 const GridView: React.FC = () => {
   const tHours = useSimTime();
+  const { start, hours } = useForecastWindow();
 
   const [hoverInfo, setHoverInfo] = useState<TooltipInfo | null>(null);
   const [pinnedInfo, setPinnedInfo] = useState<TooltipInfo | null>(null);
@@ -56,17 +67,151 @@ const GridView: React.FC = () => {
     }));
   };
 
-  // --- compute flows once per render and share with canvas + table ---
+  // ------------------------------------------------------------
+  // 1) Load PV/Wind forecast for the current forecast window
+  // ------------------------------------------------------------
+  const [forecastSeries, setForecastSeries] = useState<ForecastPoint[]>([]);
+  const [forecastError, setForecastError] = useState<string | null>(null);
+
+  useEffect(() => {
+    if (!start) return;
+
+    const effectiveHours = hours ?? 72;
+    const startISO = start.toISOString();
+    const endISO = new Date(
+      start.getTime() + effectiveHours * 3600 * 1000,
+    ).toISOString();
+
+    let cancelled = false;
+
+    async function loadForecast() {
+      setForecastError(null);
+
+      try {
+        const urlPv = `${BACKEND_BASE}/forecast?tech=pv&start=${encodeURIComponent(
+          startISO,
+        )}&end=${encodeURIComponent(endISO)}`;
+        const urlWind = `${BACKEND_BASE}/forecast?tech=wind&start=${encodeURIComponent(
+          startISO,
+        )}&end=${encodeURIComponent(endISO)}`;
+
+        const [respPv, respWind] = await Promise.all([
+          fetch(urlPv),
+          fetch(urlWind),
+        ]);
+
+        if (!respPv.ok || !respWind.ok) {
+          throw new Error(
+            `Backend error: PV ${respPv.status}, wind ${respWind.status}`,
+          );
+        }
+
+        const pvJson = await respPv.json();
+        const windJson = await respWind.json();
+
+        if (cancelled) return;
+
+        // index wind by ISO time
+        const windByTime = new Map<string, any>();
+        for (const w of windJson) {
+          windByTime.set(w.time, w);
+        }
+
+        const merged: ForecastPoint[] = pvJson.map((p: any) => {
+          const t = new Date(p.time).getTime();
+          const w = windByTime.get(p.time);
+          return {
+            tMs: t,
+            pvForecast: Number(p.forecast),
+            windForecast: w ? Number(w.forecast) : 0,
+          };
+        });
+
+        // sort by time just in case
+        merged.sort((a, b) => a.tMs - b.tMs);
+        setForecastSeries(merged);
+      } catch (e: any) {
+        console.error("Error fetching grid forecast data", e);
+        if (!cancelled) {
+          setForecastError("Could not load forecast data for grid view.");
+          setForecastSeries([]);
+        }
+      }
+    }
+
+    loadForecast();
+    return () => {
+      cancelled = true;
+    };
+  }, [start?.getTime(), hours]);
+
+  // ------------------------------------------------------------
+  // 2) For the current simulated time, get interpolated totals
+  //    PV_MW, WIND_MW from hourly forecastSeries.
+  //    This uses *the same* start + tHours timeline as ForecastView.
+  // ------------------------------------------------------------
+
+  const forecastTotals = useMemo(() => {
+    if (
+      flowMode !== "forecast" ||
+      !start ||
+      forecastSeries.length === 0
+    ) {
+      return undefined;
+    }
+
+    const tAbs = start.getTime() + tHours * 3600 * 1000;
+
+    // clamp outside range
+    if (tAbs <= forecastSeries[0].tMs) {
+      const p = forecastSeries[0];
+      return { pvMW: p.pvForecast, windMW: p.windForecast };
+    }
+    const last = forecastSeries[forecastSeries.length - 1];
+    if (tAbs >= last.tMs) {
+      return { pvMW: last.pvForecast, windMW: last.windForecast };
+    }
+
+    // find bounding points
+    let i = 0;
+    for (; i < forecastSeries.length - 1; i++) {
+      const p0 = forecastSeries[i];
+      const p1 = forecastSeries[i + 1];
+      if (tAbs >= p0.tMs && tAbs <= p1.tMs) {
+        const span = p1.tMs - p0.tMs || 1;
+        const alpha = (tAbs - p0.tMs) / span;
+
+        const pvMW =
+          p0.pvForecast + alpha * (p1.pvForecast - p0.pvForecast);
+        const windMW =
+          p0.windForecast + alpha * (p1.windForecast - p0.windForecast);
+
+        return { pvMW, windMW };
+      }
+    }
+
+    // fallback (shouldn't normally hit)
+    return { pvMW: last.pvForecast, windMW: last.windForecast };
+  }, [flowMode, start?.getTime(), tHours, forecastSeries]);
+
+  // ------------------------------------------------------------
+  // 3) Compute flows for canvas + table
+  //    - in SIM mode: same as before
+  //    - in FORECAST mode: same sinusoidal skeleton, scaled by totals
+  // ------------------------------------------------------------
 
   const flows = useMemo(
     () =>
-      // if you extended simulateLineFlows to take a mode argument,
-      // call it like: simulateLineFlows(tHours, flowMode)
-      simulateLineFlows(tHours),
-    [tHours /*, flowMode */],
+      simulateLineFlows(tHours, {
+        useForecast: flowMode === "forecast" && !!forecastTotals,
+        forecastTotals,
+      }),
+    [tHours, flowMode, forecastTotals],
   );
 
-  // --- node metrics ---
+  // ------------------------------------------------------------
+  // 4) Node metrics from flows (unchanged logic)
+  // ------------------------------------------------------------
 
   const nodeStatus: Record<string, NodeStatus> = {};
   NODES.forEach((n) => {
@@ -169,7 +314,7 @@ const GridView: React.FC = () => {
                 ? "1px solid #42523e"
                 : "1px solid #42523e",
             background:
-              flowMode === "sim" ? "#75896b" : "rgba(0,0,0,0.15)",
+              flowMode === "sim" ? "#75896b" : "#232920",
             color: "#f5f5f5",
             cursor: "pointer",
             fontSize: 12,
@@ -188,7 +333,7 @@ const GridView: React.FC = () => {
                 : "1px solid #444c5a",
             borderLeft: "none",
             background:
-              flowMode === "forecast" ? "#75896b" : "rgba(0,0,0,0.15)",
+              flowMode === "forecast" ? "#75896b" : "#232920",
             color: "#f5f5f5",
             cursor: "pointer",
             fontSize: 12,
@@ -197,10 +342,15 @@ const GridView: React.FC = () => {
           Forecast-driven
         </button>
         <span style={{ marginLeft: 10, opacity: 0.7, fontSize: 11 }}>
-          {/* purely cosmetic unless you wire simulateLineFlows(mode) */}
-          (uses same visualisation; hook into forecast data in simulation.ts)
+          (driven by PV &amp; wind forecast at current simulated time)
         </span>
       </div>
+
+      {forecastError && flowMode === "forecast" && (
+        <p style={{ color: "#e74c3c", fontSize: 12, marginBottom: 4 }}>
+          {forecastError}
+        </p>
+      )}
 
       <div
         style={{
@@ -284,7 +434,9 @@ const GridView: React.FC = () => {
             <p style={{ opacity: 0.9, fontSize: 12, marginTop: 4 }}>
               Selected asset:{" "}
               <strong>{activeTooltip.node.name}</strong>{" "}
-              <span style={{ opacity: 0.8 }}>({activeTooltip.node.id})</span>
+              <span style={{ opacity: 0.8 }}>
+                ({activeTooltip.node.id})
+              </span>
             </p>
           )}
 

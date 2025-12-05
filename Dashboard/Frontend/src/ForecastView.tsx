@@ -36,6 +36,16 @@ function toInputDateString(d: Date): string {
   return `${y}-${m}-${day}`;
 }
 
+// Types for recommendations
+type Severity = "info" | "watch" | "critical";
+
+interface RecommendedAction {
+  id: string;
+  title: string;
+  description: string;
+  severity: Severity;
+}
+
 // ------------------------------------------------------------------
 
 const ForecastView: React.FC = () => {
@@ -195,6 +205,170 @@ const ForecastView: React.FC = () => {
     return computeErrorMetrics(actual, forecast);
   }, [data]);
 
+  // ---- live clock (real control-room time, time only) --------------
+
+  const [now, setNow] = useState<Date>(new Date());
+
+  useEffect(() => {
+    const id = setInterval(() => setNow(new Date()), 1000);
+    return () => clearInterval(id);
+  }, []);
+
+  const nowTimeString = useMemo(
+    () =>
+      now.toLocaleTimeString([], {
+        hour: "2-digit",
+        minute: "2-digit",
+        second: "2-digit",
+      }),
+    [now],
+  );
+
+  // ---- derive simple forecast summary for recommendations ----------
+
+  const forecastSummary = useMemo(() => {
+    if (data.length === 0) return null;
+
+    let totalPv = 0;
+    let totalWind = 0;
+    let peakCombined = -Infinity;
+    let minCombined = Infinity;
+
+    const combinedValues: number[] = [];
+
+    for (const p of data) {
+      const combined = p.pvForecast + p.windForecast;
+      combinedValues.push(combined);
+      totalPv += p.pvForecast;
+      totalWind += p.windForecast;
+      if (combined > peakCombined) peakCombined = combined;
+      if (combined < minCombined) minCombined = combined;
+    }
+
+    const n = data.length;
+    const avgCombined =
+      combinedValues.reduce((a, b) => a + b, 0) / (n || 1);
+
+    const highThreshold = peakCombined * 0.8;
+    const lowThreshold = peakCombined * 0.3;
+
+    let highCount = 0;
+    let lowCount = 0;
+    for (const v of combinedValues) {
+      if (v >= highThreshold) highCount += 1;
+      if (v <= lowThreshold) lowCount += 1;
+    }
+
+    const highShare = highCount / (n || 1);
+    const lowShare = lowCount / (n || 1);
+    const totalEnergy = totalPv + totalWind;
+    const pvShare =
+      totalEnergy > 0 ? totalPv / totalEnergy : 0.5; // fallback 50/50
+
+    return {
+      peakCombined,
+      minCombined,
+      avgCombined,
+      highShare,
+      lowShare,
+      pvShare,
+    };
+  }, [data]);
+
+  const recommendedActions: RecommendedAction[] = useMemo(() => {
+    if (!forecastSummary) {
+      return [
+        {
+          id: "no-data",
+          title: "Waiting for forecast window",
+          severity: "info",
+          description:
+            "Select a valid 3-day window to see operational recommendations based on PV and wind output.",
+        },
+      ];
+    }
+
+    const {
+      peakCombined,
+      highShare,
+      lowShare,
+      pvShare,
+      avgCombined,
+      minCombined,
+    } = forecastSummary;
+
+    const actions: RecommendedAction[] = [];
+
+    // 1) High-renewable period
+    if (peakCombined > 0 && highShare > 0.25) {
+      actions.push({
+        id: "high-renewables",
+        title: "Sustained high renewable generation",
+        severity: "watch",
+        description:
+          "A large fraction of the window shows high combined PV + wind output. Prioritize charging BESS, backing down flexible fossil units, and checking congestion margins on key corridors.",
+      });
+    }
+
+    // 2) Low-renewable period / scarcity
+    if (lowShare > 0.25) {
+      actions.push({
+        id: "low-renewables",
+        title: "Extended low renewable period",
+        severity: "watch",
+        description:
+          "Several hours have relatively low PV + wind. Consider bringing on flexible thermal capacity, scheduling hydro releases, or activating demand response products.",
+      });
+    }
+
+    // 3) Strong solar dominance
+    if (pvShare > 0.6) {
+      actions.push({
+        id: "solar-dominant",
+        title: "PV-dominated profile",
+        severity: "info",
+        description:
+          "The window is dominated by PV generation. Prepare for steep evening ramps: ensure adequate ramping capacity and verify interconnection margins for sunset hours.",
+      });
+    }
+
+    // 4) Strong wind dominance
+    if (pvShare < 0.4) {
+      actions.push({
+        id: "wind-dominant",
+        title: "Wind-driven system",
+        severity: "info",
+        description:
+          "Wind provides most of the renewable energy in this window. Monitor forecast uncertainty and ensure inertia / system strength are sufficient during high-wind hours.",
+      });
+    }
+
+    // 5) High variability: frequent ramps
+    const variabilityRatio =
+      avgCombined > 0 ? (peakCombined - minCombined) / avgCombined : 0;
+    if (variabilityRatio > 1.0) {
+      actions.push({
+        id: "high-variability",
+        title: "High intra-day variability",
+        severity: "critical",
+        description:
+          "Combined PV + wind output swings strongly within the window. Check redispatch options, ramping constraints, and the availability of fast reserves.",
+      });
+    }
+
+    if (actions.length === 0) {
+      actions.push({
+        id: "stable",
+        title: "Stable renewable profile",
+        severity: "info",
+        description:
+          "PV + wind forecasts are relatively stable. This is a good opportunity for planned maintenance on flexible assets and network elements.",
+      });
+    }
+
+    return actions;
+  }, [forecastSummary]);
+
   // ---- handlers for selectors ------------------------------------
 
   const applyManualDate = () => {
@@ -233,7 +407,7 @@ const ForecastView: React.FC = () => {
     <div
       style={{
         width: "100%",
-        maxWidth: "100%",         // match your GridView / App main
+        maxWidth: "100%",
         margin: "0 auto",
         boxSizing: "border-box",
       }}
@@ -246,9 +420,7 @@ const ForecastView: React.FC = () => {
       </p>
 
       {error && (
-        <p style={{ color: "#e74c3c", marginBottom: 8 }}>
-          {error}
-        </p>
+        <p style={{ color: "#e74c3c", marginBottom: 8 }}>{error}</p>
       )}
 
       {/* Date selectors */}
@@ -273,8 +445,8 @@ const ForecastView: React.FC = () => {
               marginTop: 4,
               padding: "4px 6px",
               borderRadius: 4,
-              border: "1px solid #2c3e50",
-              background: "#050814",
+              border: "1px solid #42523e",
+              background: "#232920",
               color: "#f5f5f5",
             }}
           />
@@ -289,7 +461,7 @@ const ForecastView: React.FC = () => {
               type="text"
               value={dayStr}
               onChange={(e) => setDayStr(e.target.value)}
-              style={{ width: 32 }}
+              style={{ width: 32, border: "1px solid #42523e" }}
               maxLength={2}
               placeholder="DD"
             />
@@ -297,7 +469,7 @@ const ForecastView: React.FC = () => {
               type="text"
               value={monthStr}
               onChange={(e) => setMonthStr(e.target.value)}
-              style={{ width: 32 }}
+              style={{ width: 32, border: "1px solid #42523e" }}
               maxLength={2}
               placeholder="MM"
             />
@@ -305,7 +477,7 @@ const ForecastView: React.FC = () => {
               type="text"
               value={yearStr}
               onChange={(e) => setYearStr(e.target.value)}
-              style={{ width: 52 }}
+              style={{ width: 52, border: "1px solid #42523e" }}
               maxLength={4}
               placeholder="YYYY"
             />
@@ -314,8 +486,8 @@ const ForecastView: React.FC = () => {
               style={{
                 padding: "2px 10px",
                 borderRadius: 4,
-                border: "1px solid #f5c242",
-                background: "#f5c242",
+                border: "1px solid #75896b",
+                background: "#75896b",
                 color: "#000",
                 cursor: "pointer",
                 fontSize: 12,
@@ -327,6 +499,7 @@ const ForecastView: React.FC = () => {
         </div>
       </div>
 
+      {/* Chart + metrics */}
       <div
         style={{
           display: "grid",
@@ -337,7 +510,7 @@ const ForecastView: React.FC = () => {
         {/* Chart */}
         <div
           style={{
-            background: "#101826",
+            background: "#232920",
             borderRadius: 12,
             padding: 12,
           }}
@@ -406,10 +579,11 @@ const ForecastView: React.FC = () => {
         {/* Metrics */}
         <div
           style={{
-            background: "#101826",
+            background: "#232920",
             borderRadius: 12,
             padding: 12,
             fontSize: 14,
+            color: "#f5f5f5",
           }}
         >
           <h3>Model performance</h3>
@@ -425,6 +599,95 @@ const ForecastView: React.FC = () => {
           <MetricRow label="RMSE (MW)" value={windMetrics.rmse} />
           <MetricRow label="Bias (MW)" value={windMetrics.bias} />
           <MetricRow label="MAPE (%)" value={windMetrics.mape} />
+        </div>
+      </div>
+
+      {/* Operational recommendations + live clock */}
+      <div
+        style={{
+          marginTop: 20,
+          display: "grid",
+          gridTemplateColumns: "2fr 1.1fr",
+          gap: 16,
+        }}
+      >
+        {/* Recommendations */}
+        <div
+          style={{
+            background: "#232920",
+            borderRadius: 12,
+            padding: 12,
+            fontSize: 13,
+          }}
+        >
+          <h3 style={{ marginBottom: 8 }}>Operational recommendations</h3>
+          <p style={{ fontSize: 12, opacity: 0.8, marginBottom: 10 }}>
+            Suggested actions for the next {effectiveHours} hours, based on
+            the current PV &amp; wind forecast window.
+          </p>
+
+          <ul style={{ listStyle: "none", padding: 0, margin: 0 }}>
+            {recommendedActions.map((act) => (
+              <li
+                key={act.id}
+                style={{
+                  marginBottom: 10,
+                  paddingBottom: 8,
+                  borderBottom: "1px solid rgba(255,255,255,0.05)",
+                }}
+              >
+                <div
+                  style={{
+                    display: "flex",
+                    alignItems: "center",
+                    marginBottom: 4,
+                    gap: 8,
+                  }}
+                >
+                  <SeverityPill severity={act.severity} />
+                  <span style={{ fontWeight: 600 }}>{act.title}</span>
+                </div>
+                <div
+                  style={{
+                    fontSize: 12,
+                    opacity: 0.9,
+                    lineHeight: 1.4,
+                  }}
+                >
+                  {act.description}
+                </div>
+              </li>
+            ))}
+          </ul>
+        </div>
+
+        {/* Live clock / control-room panel */}
+        <div
+          style={{
+            background: "#232920",
+            borderRadius: 12,
+            padding: 12,
+            fontSize: 13,
+            display: "flex",
+            flexDirection: "column",
+            justifyContent: "space-between",
+          }}
+        >
+          <div>
+            <h3 style={{ marginBottom: 2 }}>Control-room clock</h3>
+            <p
+              style={{
+                fontSize: 32,
+                letterSpacing: 1,
+                fontVariantNumeric: "tabular-nums",
+              }}
+            >
+              {nowTimeString}
+            </p>
+            <p style={{ fontSize: 11, opacity: 0.75, marginTop: 4 }}>
+              Real-world time.
+            </p>
+          </div>
         </div>
       </div>
 
@@ -454,5 +717,36 @@ const MetricRow: React.FC<{
     </span>
   </div>
 );
+
+// tiny component for severity pill
+const SeverityPill: React.FC<{ severity: Severity }> = ({ severity }) => {
+  let bg: string;
+  let label: string;
+  if (severity === "critical") {
+    bg = "#e74c3c";
+    label = "CRITICAL";
+  } else if (severity === "watch") {
+    bg = "#f1c40f";
+    label = "WATCH";
+  } else {
+    bg = "#75896b";
+    label = "INFO";
+  }
+
+  return (
+    <span
+      style={{
+        fontSize: 10,
+        padding: "2px 8px",
+        borderRadius: 999,
+        background: bg,
+        color: "#000",
+        fontWeight: 700,
+      }}
+    >
+      {label}
+    </span>
+  );
+};
 
 export default ForecastView;

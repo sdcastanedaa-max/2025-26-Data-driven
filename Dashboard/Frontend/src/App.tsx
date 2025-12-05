@@ -1,3 +1,4 @@
+// Frontend/src/App.tsx
 import React, { useState } from "react";
 import ForecastView from "./ForecastView";
 import GridView from "./GridView";
@@ -15,7 +16,7 @@ const App: React.FC = () => {
             minHeight: "100vh",
             width: "100vw",        // force full viewport width
             overflowX: "hidden",
-            background: "#050814",
+            background: "#161a14",
             color: "#f5f5f5",
           }}
         >
@@ -37,10 +38,10 @@ const App: React.FC = () => {
               style={{
                 display: "inline-flex",
                 gap: 8,
-                background: "#050814",
+                background: "#232920",
                 padding: 4,
                 borderRadius: 999,
-                border: "1px solid #2c3e50",
+                border: "1px solid #42523e",
               }}
             >
               <button
@@ -51,7 +52,7 @@ const App: React.FC = () => {
                   border: "none",
                   cursor: "pointer",
                   background:
-                    tab === "forecast" ? "#f5c242" : "transparent",
+                    tab === "forecast" ? "#75896b" : "transparent",
                   color: tab === "forecast" ? "#000" : "#f5f5f5",
                   fontSize: 13,
                   fontWeight: 500,
@@ -66,7 +67,7 @@ const App: React.FC = () => {
                   borderRadius: 999,
                   border: "none",
                   cursor: "pointer",
-                  background: tab === "grid" ? "#f5c242" : "transparent",
+                  background: tab === "grid" ? "#75896b" : "transparent",
                   color: tab === "grid" ? "#000" : "#f5f5f5",
                   fontSize: 13,
                   fontWeight: 500,

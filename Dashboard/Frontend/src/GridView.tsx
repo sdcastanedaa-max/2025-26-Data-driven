@@ -1,4 +1,4 @@
-// frontend/src/GridView.tsx
+// Frontend/src/GridView.tsx
 import { useSimTime } from "./simTime";
 import React, { useMemo, useState } from "react";
 import GridCanvas from "./GridCanvas";
@@ -350,7 +350,7 @@ const Th: React.FC<{ children: React.ReactNode }> = ({ children }) => (
     style={{
       textAlign: "left",
       padding: "4px 6px",
-      borderBottom: "1px solid #1f2a3d",
+      borderBottom: "1px solid #75896b",
       fontWeight: 600,
     }}
   >
@@ -362,7 +362,7 @@ const Td: React.FC<{ children: React.ReactNode }> = ({ children }) => (
   <td
     style={{
       padding: "3px 6px",
-      borderBottom: "1px solid #1f2a3d",
+      borderBottom: "1px solid #75896b",
       fontVariantNumeric: "tabular-nums",
     }}
   >

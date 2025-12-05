@@ -1,3 +1,4 @@
+// Frontend/src/App.tsx
 import React, { useState } from "react";
 import ForecastView from "./ForecastView";
 import GridView from "./GridView";

@@ -41,9 +41,36 @@ type ForecastPoint = {
   windForecast: number; // MW
 };
 
+// ---- simple real-time clock hook (HH:MM:SS, local) -----------------------
+
+function useNowClock(): string {
+  const [timeStr, setTimeStr] = useState<string>(() => {
+    const d = new Date();
+    const hh = String(d.getHours()).padStart(2, "0");
+    const mm = String(d.getMinutes()).padStart(2, "0");
+    const ss = String(d.getSeconds()).padStart(2, "0");
+    return `${hh}:${mm}:${ss}`;
+  });
+
+  useEffect(() => {
+    const id = window.setInterval(() => {
+      const d = new Date();
+      const hh = String(d.getHours()).padStart(2, "0");
+      const mm = String(d.getMinutes()).padStart(2, "0");
+      const ss = String(d.getSeconds()).padStart(2, "0");
+      setTimeStr(`${hh}:${mm}:${ss}`);
+    }, 1000);
+
+    return () => window.clearInterval(id);
+  }, []);
+
+  return timeStr;
+}
+
 const GridView: React.FC = () => {
   const tHours = useSimTime();
   const { start, hours } = useForecastWindow();
+  const nowClock = useNowClock();
 
   const [hoverInfo, setHoverInfo] = useState<TooltipInfo | null>(null);
   const [pinnedInfo, setPinnedInfo] = useState<TooltipInfo | null>(null);
@@ -147,8 +174,6 @@ const GridView: React.FC = () => {
 
   // ------------------------------------------------------------
   // 2) For the current simulated time, get interpolated totals
-  //    PV_MW, WIND_MW from hourly forecastSeries.
-  //    This uses *the same* start + tHours timeline as ForecastView.
   // ------------------------------------------------------------
 
   const forecastTotals = useMemo(() => {
@@ -173,8 +198,7 @@ const GridView: React.FC = () => {
     }
 
     // find bounding points
-    let i = 0;
-    for (; i < forecastSeries.length - 1; i++) {
+    for (let i = 0; i < forecastSeries.length - 1; i++) {
       const p0 = forecastSeries[i];
       const p1 = forecastSeries[i + 1];
       if (tAbs >= p0.tMs && tAbs <= p1.tMs) {
@@ -196,8 +220,6 @@ const GridView: React.FC = () => {
 
   // ------------------------------------------------------------
   // 3) Compute flows for canvas + table
-  //    - in SIM mode: same as before
-  //    - in FORECAST mode: same sinusoidal skeleton, scaled by totals
   // ------------------------------------------------------------
 
   const flows = useMemo(
@@ -210,7 +232,7 @@ const GridView: React.FC = () => {
   );
 
   // ------------------------------------------------------------
-  // 4) Node metrics from flows (unchanged logic)
+  // 4) Node metrics from flows
   // ------------------------------------------------------------
 
   const nodeStatus: Record<string, NodeStatus> = {};
@@ -342,7 +364,7 @@ const GridView: React.FC = () => {
           Forecast-driven
         </button>
         <span style={{ marginLeft: 10, opacity: 0.7, fontSize: 11 }}>
-          (driven by PV &amp; wind forecast at current simulated time)
+          (driven by PV &amp; wind forecast at current time)
         </span>
       </div>
 
@@ -427,7 +449,7 @@ const GridView: React.FC = () => {
         >
           <h3>Line loading snapshot</h3>
           <p style={{ opacity: 0.75, fontSize: 12 }}>
-            Time index: t = {tHours.toFixed(2)} h (simulated)
+            Live clock (local): <strong>{nowClock}</strong>
           </p>
 
           {activeTooltip && (

@@ -33,7 +33,7 @@ const LEGEND_ITEMS: { key: NodeType; label: string }[] = [
 ];
 
 // same backend root as ForecastView
-const BACKEND_BASE = "http://127.0.0.1:8000/Backend";
+const BACKEND_BASE = import.meta.env.VITE_BACKEND_URL; //const BACKEND_BASE = "http://127.0.0.1:8000/Backend" when running locally
 
 type ForecastPoint = {
   tMs: number;        // timestamp in ms

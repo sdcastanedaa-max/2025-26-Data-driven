@@ -38,20 +38,23 @@ export function allocateForecastToNodes(
 
   if (!totals) return injections;
 
-  // ------- PV allocation -------
+  // ------ PV allocation ------
   const pvNodes = NODES.filter((n) => n.type === "pv");
   const totalPvCap = pvNodes.reduce(
     (acc, n) => acc + (n.capacity_MW ?? 0),
-    0,
+    0
   );
 
-  if (totals.pvMW != null && totalPvCap > 0) {
+  // use a local, guaranteed number (0 if null)
+  const pvTotal = totals.pvMW ?? 0;
+
+  if (pvTotal > 0 && totalPvCap > 0) {
     pvNodes.forEach((n) => {
       const cap = n.capacity_MW ?? 0;
       if (cap <= 0) return;
 
       const share = cap / totalPvCap;
-      let p = share * totals.pvMW;
+      let p = share * pvTotal;
 
       // clamp to [0, capacity]
       if (p < 0) p = 0;
@@ -61,25 +64,27 @@ export function allocateForecastToNodes(
     });
   }
 
-  // ------- Wind allocation -------
+  // ------ Wind allocation ------
   const windNodes = NODES.filter((n) => n.type === "wind");
   const totalWindCap = windNodes.reduce(
     (acc, n) => acc + (n.capacity_MW ?? 0),
-    0,
+    0
   );
 
-  if (totals.windMW != null && totalWindCap > 0) {
+  const windTotal = totals.windMW ?? 0;
+
+  if (windTotal > 0 && totalWindCap > 0) {
     windNodes.forEach((n) => {
       const cap = n.capacity_MW ?? 0;
       if (cap <= 0) return;
 
       const share = cap / totalWindCap;
-      let p = share * totals.windMW;
+      let p = share * windTotal;
 
       if (p < 0) p = 0;
       if (p > cap) p = cap;
 
-      // "+=" just in case some node is hybrid PV+wind in the toy world
+      // "+=" in case of hybrid PV+wind node
       injections[n.id] += p;
     });
   }

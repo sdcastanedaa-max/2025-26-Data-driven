@@ -216,8 +216,8 @@ export const NODES: GridNode[] = [
     id: "F3",
     name: "Valencia CCGT",
     type: "fossil",
-    x: 7,
-    y: -1,
+    x: 8,
+    y: 1,
     capacity_MW: 700,
   },
   {
@@ -278,7 +278,7 @@ export const NODES: GridNode[] = [
     id: "L2",
     name: "Barcelona Metropolitan Load",
     type: "load_res",
-    x: 7,
+    x: 8,
     y: 3.5,
     capacity_MW: 900,
   },
@@ -322,18 +322,18 @@ export const NODES: GridNode[] = [
   { id: "L_W1_S1", from: "W1", to: "S1", rating_MW: 500, level: "T" },
   { id: "L_W2_S2", from: "W2", to: "S2", rating_MW: 450, level: "T" },
   { id: "L_W3_S4", from: "W3", to: "S4", rating_MW: 400, level: "T" },
-  { id: "L_W4_S4", from: "W4", to: "S4", rating_MW: 400, level: "T" },
+  { id: "L_W4_S4", from: "W4", to: "S4", rating_MW: 800, level: "T" },
   { id: "L_W5_S3", from: "W5", to: "S3", rating_MW: 800, level: "T" },
 
   // --- PV → regional substations --------------------------------
   { id: "L_P1_S6", from: "P1", to: "S6", rating_MW: 250, level: "D" },
-  { id: "L_P2_S4", from: "P2", to: "S4", rating_MW: 260, level: "D" },
-  { id: "L_P3_S3", from: "P3", to: "S3", rating_MW: 260, level: "D" },
+  { id: "L_P2_S4", from: "P2", to: "S4", rating_MW: 550, level: "D" },
+  { id: "L_P3_S3", from: "P3", to: "S3", rating_MW: 450, level: "D" },
   { id: "L_P4_S5", from: "P4", to: "S5", rating_MW: 280, level: "D" },
   { id: "L_P5_S5", from: "P5", to: "S5", rating_MW: 280, level: "D" },
   { id: "L_P6_S3", from: "P6", to: "S3", rating_MW: 250, level: "D" },
   { id: "L_P7_S4", from: "P7", to: "S4", rating_MW: 260, level: "D" },
-  { id: "L_P8_S4", from: "P8", to: "S4", rating_MW: 250, level: "D" },
+  { id: "L_P8_S4", from: "P8", to: "S4", rating_MW: 450, level: "D" },
 
   // --- Fossil → backbone -----------------------------------------
   { id: "L_F1_S1", from: "F1", to: "S1", rating_MW: 800, level: "T" },

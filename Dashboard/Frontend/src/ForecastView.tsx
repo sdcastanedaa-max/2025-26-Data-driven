@@ -21,7 +21,7 @@ type SeriesPoint = {
   windForecast: number;
 };
 
-const BACKEND_BASE = "http://127.0.0.1:8000/Backend";
+const BACKEND_BASE = import.meta.env.VITE_BACKEND_URL; //const BACKEND_BASE = "http://127.0.0.1:8000/Backend" when running locally
 
 // --------- helpers ------------------------------------------------
 

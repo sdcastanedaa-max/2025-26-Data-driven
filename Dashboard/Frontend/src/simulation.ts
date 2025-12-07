@@ -38,20 +38,23 @@ export function allocateForecastToNodes(
 
   if (!totals) return injections;
 
-  // ------- PV allocation -------
+  // ------ PV allocation ------
   const pvNodes = NODES.filter((n) => n.type === "pv");
   const totalPvCap = pvNodes.reduce(
     (acc, n) => acc + (n.capacity_MW ?? 0),
     0
   );
 
-  if (totals.pvMW != null && totalPvCap > 0) {
+  // use a local, guaranteed number (0 if null)
+  const pvTotal = totals.pvMW ?? 0;
+
+  if (pvTotal > 0 && totalPvCap > 0) {
     pvNodes.forEach((n) => {
       const cap = n.capacity_MW ?? 0;
       if (cap <= 0) return;
 
       const share = cap / totalPvCap;
-      let p = share * totals.pvMW;
+      let p = share * pvTotal;
 
       // clamp to [0, capacity]
       if (p < 0) p = 0;
@@ -61,25 +64,27 @@ export function allocateForecastToNodes(
     });
   }
 
-  // ------- Wind allocation -------
+  // ------ Wind allocation ------
   const windNodes = NODES.filter((n) => n.type === "wind");
   const totalWindCap = windNodes.reduce(
     (acc, n) => acc + (n.capacity_MW ?? 0),
     0
   );
 
-  if (totals.windMW != null && totalWindCap > 0) {
+  const windTotal = totals.windMW ?? 0;
+
+  if (windTotal > 0 && totalWindCap > 0) {
     windNodes.forEach((n) => {
       const cap = n.capacity_MW ?? 0;
       if (cap <= 0) return;
 
       const share = cap / totalWindCap;
-      let p = share * totals.windMW;
+      let p = share * windTotal;
 
       if (p < 0) p = 0;
       if (p > cap) p = cap;
 
-      // "+=" just in case some node is hybrid PV+wind in the toy world
+      // "+=" in case of hybrid PV+wind node
       injections[n.id] += p;
     });
   }
@@ -93,10 +98,21 @@ export function allocateForecastToNodes(
 //
 // Positive = generation (MW), negative = load (MW).
 // Values are clamped to ±capacity_MW so assets can't violate their rating.
+//
+// IMPORTANT CHANGE:
+//   - The diurnal pattern (PV + loads) now uses *real local time-of-day*,
+//     not tHours. So at 11:00 local time, PV is "late morning" even if
+//     the app has just started.
 // -----------------------------------------------------------------------------
 
 export function computeSimInjections(tHours: number): Record<string, number> {
-  const hour = tHours % 24;
+  // real-world local time-of-day in hours (0–24)
+  const now = new Date();
+  const hour =
+    now.getHours() +
+    now.getMinutes() / 60 +
+    now.getSeconds() / 3600;
+
   const inj: Record<string, number> = {};
 
   for (const n of NODES) {
@@ -107,19 +123,21 @@ export function computeSimInjections(tHours: number): Record<string, number> {
       // simple PV bell curve: zero at night, peak at midday
       const pvShape = Math.max(
         0,
-        Math.sin(((hour - 6) / 24) * 2 * Math.PI)
+        Math.sin(((hour - 6) / 24) * 2 * Math.PI),
       );
       p = pvShape * cap; // generation ≥ 0
     } else if (n.type === "wind") {
-      // wind: gently varying around ~60–80% of capacity
+      // wind: gently varying around ~60–80% of capacity.
+      // Keep some fast wiggle tied to tHours so it animates nicely.
       const w =
         0.6 +
-        0.2 * Math.sin((2 * Math.PI * tHours) / 24) +
+        0.2 * Math.sin((2 * Math.PI * hour) / 24) +
         0.1 * Math.sin((2 * Math.PI * tHours) / 6);
       p = Math.max(0, w) * cap;
     } else if (n.type === "fossil" || n.type === "nuclear") {
       // baseload-ish around 70–90% of capacity
-      const base = 0.75 + 0.1 * Math.sin((2 * Math.PI * tHours) / 24);
+      const base =
+        0.75 + 0.1 * Math.sin((2 * Math.PI * hour) / 24);
       p = base * cap;
     } else if (n.type === "load_res" || n.type === "load_ind") {
       // loads: negative injections with daily pattern
@@ -204,6 +222,15 @@ function maybeUpdateEvent(tHours: number, lines: GridLine[]) {
 //
 // simulateLineFlows(tHours)                         -> sim mode
 // simulateLineFlows(tHours, { useForecast, forecastTotals }) -> RES-driven
+//
+// IMPORTANT CHANGE IN FORECAST MODE:
+//
+//   1) Always start from synthetic injections for *all* nodes
+//      (computeSimInjections).
+//   2) If useForecast=true, override only PV & wind nodes using
+//      allocateForecastToNodes(forecastTotals).
+//      Loads / fossil / nuclear stay "alive", so the whole grid stays
+//      connected, but RES magnitude follows your model.
 // -----------------------------------------------------------------------------
 
 export function simulateLineFlows(
@@ -221,18 +248,27 @@ export function simulateLineFlows(
   const useForecast = opts?.useForecast ?? false;
   const forecastTotals = opts?.forecastTotals;
 
-  // 1) Per-node injections: either forecast-based or simulated
-  const injections: Record<string, number> =
-    useForecast && forecastTotals
-      ? allocateForecastToNodes(forecastTotals)
-      : computeSimInjections(tHours);
+  // 1) Baseline per-node injections from synthetic sim (all assets)
+  const baseInjections = computeSimInjections(tHours);
 
-  // 2) Update rare events (overloads/faults)
+  // 2) If forecast mode, override only PV & Wind injections
+  let injections: Record<string, number> = { ...baseInjections };
+  if (useForecast && forecastTotals) {
+    const resInj = allocateForecastToNodes(forecastTotals);
+
+    for (const n of NODES) {
+      if (n.type === "pv" || n.type === "wind") {
+        injections[n.id] = resInj[n.id] ?? 0;
+      }
+    }
+  }
+
+  // 3) Update rare events (overloads/faults)
   maybeUpdateEvent(tHours, LINES);
 
   const flows: Record<string, LineFlow> = {};
 
-  // 3) Build line flows from injection differences
+  // 4) Build line flows from injection differences
   for (const line of LINES) {
     const nFrom = nodeById[line.from];
     const nTo = nodeById[line.to];
@@ -240,11 +276,14 @@ export function simulateLineFlows(
     const pFrom = injections[nFrom.id] ?? 0;
     const pTo = injections[nTo.id] ?? 0;
 
-    // raw flow proportional to injection imbalance
+    // raw flow proportional to injection imbalance across the line
     let rawFlow = (pFrom - pTo) * 0.5; // 0.5 is a tuning knob
 
     // clamp to line rating
-    rawFlow = Math.min(Math.max(rawFlow, -line.rating_MW), line.rating_MW);
+    rawFlow = Math.min(
+      Math.max(rawFlow, -line.rating_MW),
+      line.rating_MW,
+    );
 
     let loading = Math.abs(rawFlow) / line.rating_MW;
 
@@ -257,7 +296,7 @@ export function simulateLineFlows(
       const dur = Math.max(ev.endTHours - ev.startTHours, 1e-6);
       const prog = Math.min(
         Math.max((tHours - ev.startTHours) / dur, 0),
-        1
+        1,
       ); // 0..1
 
       if (ev.kind === "overload") {
@@ -308,4 +347,3 @@ export function simulateLineFlows(
 
   return flows;
 }
-

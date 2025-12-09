@@ -39,7 +39,7 @@ ROOT_DIR = BASE_DIR.parent.parent                   # ...\2025-26-Data-driven
 DATA_DIR = ROOT_DIR / "Prophet"                     # ...\2025-26-Data-driven\Prophet
 
 PV_CSV = DATA_DIR / "pv_forecast_1-10_comparison_2025_combined.csv"
-WIND_CSV = DATA_DIR / "wind_forecast_2025_prophet_compare.csv"
+WIND_CSV = DATA_DIR / "wind_forecast_2025_LGBM_compare.csv"
 
 print(">>> PV CSV:", PV_CSV)
 print(">>> WIND CSV:", WIND_CSV)

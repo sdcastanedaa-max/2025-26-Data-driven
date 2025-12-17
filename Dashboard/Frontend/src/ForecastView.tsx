@@ -21,7 +21,7 @@ type SeriesPoint = {
   windForecast: number;
 };
 
-const BACKEND_BASE = import.meta.env.VITE_BACKEND_URL; //const BACKEND_BASE = "http://127.0.0.1:8000/Backend" when running locally
+const BACKEND_BASE = import.meta.env.VITE_BACKEND_URL; // "http://127.0.0.1:8000/Backend" when running locally
 
 // --------- helpers ------------------------------------------------
 
@@ -52,18 +52,12 @@ const ForecastView: React.FC = () => {
   const { start, end, hours, setWindow } = useForecastWindow();
 
   // Make sure we always have a valid window, even if context is still default
-  const effectiveStart = useMemo(
-    () => start ?? DEFAULT_START,
-    [start],
-  );
-
+  const effectiveStart = useMemo(() => start ?? DEFAULT_START, [start]);
   const effectiveHours = hours ?? DEFAULT_HOURS;
 
   const effectiveEnd = useMemo(() => {
     if (end) return end;
-    return new Date(
-      effectiveStart.getTime() + effectiveHours * 3600 * 1000,
-    );
+    return new Date(effectiveStart.getTime() + effectiveHours * 3600 * 1000);
   }, [end, effectiveStart, effectiveHours]);
 
   // ---- UI state for selectors (kept in sync with effectiveStart) ----
@@ -114,10 +108,7 @@ const ForecastView: React.FC = () => {
           startISO,
         )}&end=${encodeURIComponent(endISO)}`;
 
-        const [respPv, respWind] = await Promise.all([
-          fetch(urlPv),
-          fetch(urlWind),
-        ]);
+        const [respPv, respWind] = await Promise.all([fetch(urlPv), fetch(urlWind)]);
 
         if (!respPv.ok || !respWind.ok) {
           throw new Error(
@@ -142,14 +133,10 @@ const ForecastView: React.FC = () => {
           return {
             time: t,
             pvActual:
-              p.actual === null || p.actual === undefined
-                ? null
-                : Number(p.actual),
+              p.actual === null || p.actual === undefined ? null : Number(p.actual),
             pvForecast: Number(p.forecast),
             windActual:
-              w && w.actual !== null && w.actual !== undefined
-                ? Number(w.actual)
-                : null,
+              w && w.actual !== null && w.actual !== undefined ? Number(w.actual) : null,
             windForecast: w ? Number(w.forecast) : 0,
           };
         });
@@ -172,38 +159,72 @@ const ForecastView: React.FC = () => {
     };
   }, [effectiveStart.getTime(), effectiveEnd.getTime()]);
 
-  // ---- metrics & chart data ----
+  // ------------------------------------------------------------------
+  // NEW: Day slider (view a single day within the horizon)
+  // ------------------------------------------------------------------
+
+  const dayCount = useMemo(
+    () => Math.max(1, Math.ceil(effectiveHours / 24)),
+    [effectiveHours],
+  );
+  const [dayOffset, setDayOffset] = useState<number>(0);
+
+  // reset slider when window changes
+  useEffect(() => {
+    setDayOffset(0);
+  }, [effectiveStart.getTime(), effectiveHours]);
+
+  const viewStart = useMemo(() => {
+    const ms = effectiveStart.getTime() + dayOffset * 24 * 3600 * 1000;
+    return new Date(ms);
+  }, [effectiveStart, dayOffset]);
+
+  const viewEnd = useMemo(() => {
+    const ms = Math.min(
+      effectiveEnd.getTime(),
+      viewStart.getTime() + 24 * 3600 * 1000,
+    );
+    return new Date(ms);
+  }, [effectiveEnd, viewStart]);
+
+  const viewData = useMemo(() => {
+    const s = viewStart.getTime();
+    const e = viewEnd.getTime();
+    return data.filter((p) => {
+      const t = p.time.getTime();
+      return t >= s && t < e;
+    });
+  }, [data, viewStart, viewEnd]);
+
+  // ---- metrics & chart data (NOW BASED ON viewData) ----
 
   const chartData = useMemo(
     () =>
-      data.map((p) => ({
+      viewData.map((p) => ({
         timeLabel: p.time.toISOString().slice(5, 16), // "MM-DDTHH:MM"
         pvActual: p.pvActual === null ? null : Math.round(p.pvActual),
         pvForecast: Math.round(p.pvForecast),
-        windActual:
-          p.windActual === null ? null : Math.round(p.windActual),
+        windActual: p.windActual === null ? null : Math.round(p.windActual),
         windForecast: Math.round(p.windForecast),
       })),
-    [data],
+    [viewData],
   );
 
   const pvMetrics = useMemo(() => {
-    const actual = data
-      .map((p) => p.pvActual)
-      .filter((v): v is number => v !== null);
+    const actual = viewData.map((p) => p.pvActual).filter((v): v is number => v !== null);
     if (actual.length === 0) return { mae: 0, rmse: 0, bias: 0, mape: null };
-    const forecast = data.map((p) => p.pvForecast);
+    const forecast = viewData.map((p) => p.pvForecast);
     return computeErrorMetrics(actual, forecast);
-  }, [data]);
+  }, [viewData]);
 
   const windMetrics = useMemo(() => {
-    const actual = data
+    const actual = viewData
       .map((p) => p.windActual)
       .filter((v): v is number => v !== null);
     if (actual.length === 0) return { mae: 0, rmse: 0, bias: 0, mape: null };
-    const forecast = data.map((p) => p.windForecast);
+    const forecast = viewData.map((p) => p.windForecast);
     return computeErrorMetrics(actual, forecast);
-  }, [data]);
+  }, [viewData]);
 
   // ---- live clock (real control-room time, time only) --------------
 
@@ -224,10 +245,10 @@ const ForecastView: React.FC = () => {
     [now],
   );
 
-  // ---- derive simple forecast summary for recommendations ----------
+  // ---- derive simple forecast summary for recommendations (viewData) ----------
 
   const forecastSummary = useMemo(() => {
-    if (data.length === 0) return null;
+    if (viewData.length === 0) return null;
 
     let totalPv = 0;
     let totalWind = 0;
@@ -236,7 +257,7 @@ const ForecastView: React.FC = () => {
 
     const combinedValues: number[] = [];
 
-    for (const p of data) {
+    for (const p of viewData) {
       const combined = p.pvForecast + p.windForecast;
       combinedValues.push(combined);
       totalPv += p.pvForecast;
@@ -245,9 +266,8 @@ const ForecastView: React.FC = () => {
       if (combined < minCombined) minCombined = combined;
     }
 
-    const n = data.length;
-    const avgCombined =
-      combinedValues.reduce((a, b) => a + b, 0) / (n || 1);
+    const n = viewData.length;
+    const avgCombined = combinedValues.reduce((a, b) => a + b, 0) / (n || 1);
 
     const highThreshold = peakCombined * 0.8;
     const lowThreshold = peakCombined * 0.3;
@@ -262,8 +282,7 @@ const ForecastView: React.FC = () => {
     const highShare = highCount / (n || 1);
     const lowShare = lowCount / (n || 1);
     const totalEnergy = totalPv + totalWind;
-    const pvShare =
-      totalEnergy > 0 ? totalPv / totalEnergy : 0.5; // fallback 50/50
+    const pvShare = totalEnergy > 0 ? totalPv / totalEnergy : 0.5;
 
     return {
       peakCombined,
@@ -273,7 +292,7 @@ const ForecastView: React.FC = () => {
       lowShare,
       pvShare,
     };
-  }, [data]);
+  }, [viewData]);
 
   const recommendedActions: RecommendedAction[] = useMemo(() => {
     if (!forecastSummary) {
@@ -283,34 +302,26 @@ const ForecastView: React.FC = () => {
           title: "Waiting for forecast window",
           severity: "info",
           description:
-            "Select a valid 3-day window to see operational recommendations based on PV and wind output.",
+            "Select a valid window and a day slice to see operational recommendations based on PV and wind output.",
         },
       ];
     }
 
-    const {
-      peakCombined,
-      highShare,
-      lowShare,
-      pvShare,
-      avgCombined,
-      minCombined,
-    } = forecastSummary;
+    const { peakCombined, highShare, lowShare, pvShare, avgCombined, minCombined } =
+      forecastSummary;
 
     const actions: RecommendedAction[] = [];
 
-    // 1) High-renewable period
     if (peakCombined > 0 && highShare > 0.25) {
       actions.push({
         id: "high-renewables",
         title: "Sustained high renewable generation",
         severity: "watch",
         description:
-          "A large fraction of the window shows high combined PV + wind output. Prioritize charging BESS, backing down flexible fossil units, and checking congestion margins on key corridors.",
+          "A large fraction of the selected day shows high combined PV + wind output. Prioritize charging BESS, backing down flexible fossil units, and checking congestion margins on key corridors.",
       });
     }
 
-    // 2) Low-renewable period / scarcity
     if (lowShare > 0.25) {
       actions.push({
         id: "low-renewables",
@@ -321,29 +332,26 @@ const ForecastView: React.FC = () => {
       });
     }
 
-    // 3) Strong solar dominance
     if (pvShare > 0.6) {
       actions.push({
         id: "solar-dominant",
         title: "PV-dominated profile",
         severity: "info",
         description:
-          "The window is dominated by PV generation. Prepare for steep evening ramps: ensure adequate ramping capacity and verify interconnection margins for sunset hours.",
+          "The selected day is PV-heavy. Prepare for steep evening ramps: ensure adequate ramping capacity and verify interconnection margins for sunset hours.",
       });
     }
 
-    // 4) Strong wind dominance
     if (pvShare < 0.4) {
       actions.push({
         id: "wind-dominant",
         title: "Wind-driven system",
         severity: "info",
         description:
-          "Wind provides most of the renewable energy in this window. Monitor forecast uncertainty and ensure inertia / system strength are sufficient during high-wind hours.",
+          "Wind provides most of the renewable energy in this slice. Monitor forecast uncertainty and ensure inertia / system strength are sufficient during high-wind hours.",
       });
     }
 
-    // 5) High variability: frequent ramps
     const variabilityRatio =
       avgCombined > 0 ? (peakCombined - minCombined) / avgCombined : 0;
     if (variabilityRatio > 1.0) {
@@ -352,7 +360,7 @@ const ForecastView: React.FC = () => {
         title: "High intra-day variability",
         severity: "critical",
         description:
-          "Combined PV + wind output swings strongly within the window. Check redispatch options, ramping constraints, and the availability of fast reserves.",
+          "Combined PV + wind output swings strongly within the selected day. Check redispatch options, ramping constraints, and the availability of fast reserves.",
       });
     }
 
@@ -362,7 +370,7 @@ const ForecastView: React.FC = () => {
         title: "Stable renewable profile",
         severity: "info",
         description:
-          "PV + wind forecasts are relatively stable. This is a good opportunity for planned maintenance on flexible assets and network elements.",
+          "PV + wind forecasts are relatively stable in this day slice. This is a good opportunity for planned maintenance on flexible assets and network elements.",
       });
     }
 
@@ -375,23 +383,16 @@ const ForecastView: React.FC = () => {
     const y = Number(yearStr);
     const m = Number(monthStr);
     const d = Number(dayStr);
-    if (
-      !Number.isFinite(y) ||
-      !Number.isFinite(m) ||
-      !Number.isFinite(d)
-    ) {
+    if (!Number.isFinite(y) || !Number.isFinite(m) || !Number.isFinite(d)) {
       return;
     }
-    // UTC midnight
     const newStart = new Date(Date.UTC(y, m - 1, d, 0, 0, 0));
     if (isNaN(newStart.getTime())) return;
 
     setWindow(newStart, effectiveHours);
   };
 
-  const handleCalendarChange: React.ChangeEventHandler<
-    HTMLInputElement
-  > = (e) => {
+  const handleCalendarChange: React.ChangeEventHandler<HTMLInputElement> = (e) => {
     const value = e.target.value;
     setCalendarValue(value);
     if (!value) return;
@@ -415,13 +416,15 @@ const ForecastView: React.FC = () => {
       <h2 style={{ marginBottom: 8 }}>Spain PV &amp; Wind Forecast</h2>
 
       <p style={{ fontSize: 12, opacity: 0.8, marginBottom: 4 }}>
-        Window: {toInputDateString(effectiveStart)} →{" "}
-        {toInputDateString(effectiveEnd)} ({effectiveHours} hours)
+        Window: {toInputDateString(effectiveStart)} → {toInputDateString(effectiveEnd)} (
+        {effectiveHours} hours) • Viewing: Day {dayOffset + 1}/{dayCount}
       </p>
 
-      {error && (
-        <p style={{ color: "#e74c3c", marginBottom: 8 }}>{error}</p>
-      )}
+      <p style={{ fontSize: 12, opacity: 0.75, marginBottom: 10 }}>
+        Showing: {toInputDateString(viewStart)} → {toInputDateString(viewEnd)}
+      </p>
+
+      {error && <p style={{ color: "#e74c3c", marginBottom: 8 }}>{error}</p>}
 
       {/* Date selectors */}
       <div
@@ -434,9 +437,7 @@ const ForecastView: React.FC = () => {
         }}
       >
         <div>
-          <div style={{ fontSize: 12, opacity: 0.8 }}>
-            Start date (calendar)
-          </div>
+          <div style={{ fontSize: 12, opacity: 0.8 }}>Start date (calendar)</div>
           <input
             type="date"
             value={calendarValue}
@@ -453,9 +454,7 @@ const ForecastView: React.FC = () => {
         </div>
 
         <div>
-          <div style={{ fontSize: 12, opacity: 0.8 }}>
-            Start date (manual)
-          </div>
+          <div style={{ fontSize: 12, opacity: 0.8 }}>Start date (manual)</div>
           <div style={{ display: "flex", gap: 6, marginTop: 4 }}>
             <input
               type="text"
@@ -497,6 +496,30 @@ const ForecastView: React.FC = () => {
             </button>
           </div>
         </div>
+
+        {/* NEW: Day slider */}
+        <div style={{ minWidth: 240 }}>
+          <div style={{ fontSize: 12, opacity: 0.8 }}>View day within horizon</div>
+
+          <div style={{ display: "flex", alignItems: "center", gap: 10, marginTop: 6 }}>
+            <input
+              type="range"
+              min={0}
+              max={Math.max(0, dayCount - 1)}
+              step={1}
+              value={dayOffset}
+              onChange={(e) => setDayOffset(Number(e.target.value))}
+              style={{ width: 180 }}
+            />
+            <div style={{ fontSize: 12, opacity: 0.9, whiteSpace: "nowrap" }}>
+              Day {dayOffset + 1}/{dayCount}
+            </div>
+          </div>
+
+          <div style={{ fontSize: 11, opacity: 0.7, marginTop: 4 }}>
+            Showing: {toInputDateString(viewStart)} → {toInputDateString(viewEnd)}
+          </div>
+        </div>
       </div>
 
       {/* Chart + metrics */}
@@ -518,11 +541,7 @@ const ForecastView: React.FC = () => {
           <ResponsiveContainer width="100%" height={400}>
             <LineChart data={chartData}>
               <CartesianGrid stroke="#1f2a3d" strokeDasharray="3 3" />
-              <XAxis
-                dataKey="timeLabel"
-                tick={{ fontSize: 10 }}
-                minTickGap={20}
-              />
+              <XAxis dataKey="timeLabel" tick={{ fontSize: 10 }} minTickGap={20} />
               <YAxis
                 label={{
                   value: "Power (MW)",
@@ -622,8 +641,8 @@ const ForecastView: React.FC = () => {
         >
           <h3 style={{ marginBottom: 8 }}>Operational recommendations</h3>
           <p style={{ fontSize: 12, opacity: 0.8, marginBottom: 10 }}>
-            Suggested actions for the next {effectiveHours} hours, based on
-            the current PV &amp; wind forecast window.
+            Suggested actions for the selected day slice (Day {dayOffset + 1}/{dayCount})
+            within the {effectiveHours}-hour window.
           </p>
 
           <ul style={{ listStyle: "none", padding: 0, margin: 0 }}>
@@ -647,13 +666,7 @@ const ForecastView: React.FC = () => {
                   <SeverityPill severity={act.severity} />
                   <span style={{ fontWeight: 600 }}>{act.title}</span>
                 </div>
-                <div
-                  style={{
-                    fontSize: 12,
-                    opacity: 0.9,
-                    lineHeight: 1.4,
-                  }}
-                >
+                <div style={{ fontSize: 12, opacity: 0.9, lineHeight: 1.4 }}>
                   {act.description}
                 </div>
               </li>
@@ -692,9 +705,7 @@ const ForecastView: React.FC = () => {
       </div>
 
       {loading && (
-        <p style={{ marginTop: 8, fontSize: 12, opacity: 0.8 }}>
-          Loading data…
-        </p>
+        <p style={{ marginTop: 8, fontSize: 12, opacity: 0.8 }}>Loading data…</p>
       )}
     </div>
   );

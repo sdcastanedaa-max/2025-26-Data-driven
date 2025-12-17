@@ -354,7 +354,7 @@ const ForecastView: React.FC = () => {
 
     const variabilityRatio =
       avgCombined > 0 ? (peakCombined - minCombined) / avgCombined : 0;
-    if (variabilityRatio > 1.0) {
+    if (variabilityRatio > 1.5) {
       actions.push({
         id: "high-variability",
         title: "High intra-day variability",
